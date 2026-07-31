@@ -58,38 +58,29 @@ pip install -e connector
 pabel-connector install <agent> --dir . --client-id CLIENT_ID --client-secret CLIENT_SECRET
 ```
 
-`<agent>` is `claude-code`, `cursor`, `windsurf`, `vscode`, `copilot-cli`,
-`gemini-cli`, or `codex-cli` (`pabel-connector list` shows the full set
-and each one's verification status). `--client-id`/`--client-secret` are
-the credential `create-installation` printed in step 1 for this specific
-employee - proof of *which installation* this is, verified by the server
-on every call, never just trusted because of which URL it reached.
+Run `pabel-connector list` to see every valid `<agent>` value and its
+verification status. `--client-id`/`--client-secret` are the credential
+`create-installation` printed in step 1 for this specific employee - proof
+of *which installation* this is, verified by the server on every call,
+never just trusted because of which URL it reached.
 
-**Read the verification status before trusting anything in production**:
-today only `claude-code` is confirmed against a real, live install - every
-other adapter is built strictly to each vendor's own documentation and not
-yet tried live. Full detail: [`connector/README.md`](connector/README.md)
-and [`connector/docs/coverage-matrix.md`](connector/docs/coverage-matrix.md).
+**Read the verification status before trusting anything in production** -
+coverage varies by agent: some adapters are confirmed against a real, live
+install, others are still built strictly to that vendor's own
+documentation and not yet tried live. Full detail:
+[`connector/README.md`](connector/README.md) and
+[`connector/docs/coverage-matrix.md`](connector/docs/coverage-matrix.md).
 
-**Claude Code specifically** also needs its dedicated marketplace plugin -
-the command above already stores the installation credential and prints
-these same two lines, since Claude Code's own plugin mechanism replaces
-hand-written hook config entirely (nothing for `pabel-connector` to write):
-
-```
-/plugin marketplace add <path-or-git-url-to-claude-plugin>
-/plugin install pabel@pabel-marketplace
-```
-
-Full configuration: [`claude-plugin/pabel/README.md`](claude-plugin/pabel/README.md)
-(also has `enroll.py`/`login.py`, self-contained equivalents of `install`/
-`login` above for anyone who only wants the Claude Code plugin and would
-rather not install `connector/` at all).
+The command also prints whatever else that particular agent needs - some
+write a hook/config file directly and need nothing further, others point
+you at one more one-time step specific to that agent's own UI (e.g.
+installing a native plugin). Follow whatever it prints; that agent's own
+part of the repo has the full detail if you need it.
 
 ### 3. Log in as yourself
 
 ```
-pabel-connector login   # or claude-plugin/pabel/login.py for the Claude Code plugin specifically
+pabel-connector login
 ```
 
 Opens the system browser at Keycloak's own login page (MFA included,
