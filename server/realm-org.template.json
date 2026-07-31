@@ -1,0 +1,79 @@
+{
+  "realm": "pabel",
+  "enabled": true,
+  "registrationAllowed": false,
+  "roles": {
+    "realm": [
+      {"name": "agent_claude_code_user", "description": "May use the claude-code agent"}
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "pabel",
+      "name": "PABEL agent-mediated document access",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://127.0.0.1:8766/callback"],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "protocolMappers": [
+        {
+          "name": "abe_attributes",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "abe_attributes",
+            "claim.name": "abe_attributes",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@org.local",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Demo",
+      "requiredActions": ["CONFIGURE_TOTP"],
+      "credentials": [{"type": "password", "value": "{{ALICE_PASSWORD}}", "temporary": false}],
+      "attributes": {"abe_attributes": ["livello=3", "ruolo_ceo", "dev", "security_specialist"]},
+      "realmRoles": ["agent_claude_code_user"]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "email": "bob@org.local",
+      "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "Demo",
+      "requiredActions": ["CONFIGURE_TOTP"],
+      "credentials": [{"type": "password", "value": "{{BOB_PASSWORD}}", "temporary": false}],
+      "attributes": {"abe_attributes": ["livello=2", "ruolo_hr"]}
+    },
+    {
+      "username": "charlie",
+      "enabled": true,
+      "email": "charlie@org.local",
+      "emailVerified": true,
+      "firstName": "Charlie",
+      "lastName": "Demo",
+      "requiredActions": ["CONFIGURE_TOTP"],
+      "credentials": [{"type": "password", "value": "{{CHARLIE_PASSWORD}}", "temporary": false}],
+      "attributes": {"abe_attributes": ["livello=1", "ruolo_dev"]}
+    }
+  ]
+}

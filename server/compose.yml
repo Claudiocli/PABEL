@@ -1,0 +1,77 @@
+# PABEL backing services: Keycloak (identity) + PostgreSQL (user/agent
+# keys, agent registry, audit mirror - see schema.sql). Intended for
+# Rancher Desktop with the containerd engine:
+#   nerdctl compose up -d
+#
+# (Rancher Desktop's dockerd/moby engine and its bundled `docker` CLI also
+# read this file via `docker compose up -d` if that engine is selected
+# instead - Moby itself is open source, unlike Docker Desktop. Pick
+# whichever engine Rancher Desktop is configured with; this file does not
+# assume Docker Desktop and does not need it installed.)
+#
+# Before the first run:
+#   cp .env.example .env         # then fill in real passwords
+#   python generate_realm.py     # writes realm-org.json from the template
+#
+# Dev-only settings: HTTP without TLS, permissive redirect URIs, ports
+# published to the host. Do not use as-is outside a local demo.
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: start-dev --import-realm
+    env_file: .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./realm-org.json:/opt/keycloak/data/import/realm-org.json:ro
+
+  postgres:
+    image: postgres:16-alpine
+    env_file: .env
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # One agent product = one container instance (see docs/phase2-engineering-notes.md
+  # §4 for why: each is a genuinely separate remote MCP server URL, sidestepping
+  # any question of how an MCP client isolates OAuth state across several servers).
+  # Register the agent first (python agents_admin.py add claude-code ...), create
+  # its required_role in Keycloak, then add one block like this per agent - only
+  # PABEL_AGENT_ID and the published port need to change.
+  mcp-server-claude-code:
+    build: .
+    env_file: .env
+    environment:
+      # Inside the compose network, services reach each other by service
+      # name, not localhost - .env's KEYCLOAK_URL/PABEL_DB_DSN are for
+      # scripts run on the host (login.py, agents_admin.py, ...) and don't
+      # apply here.
+      KEYCLOAK_URL: http://keycloak:8080
+      # Keycloak stamps every token's `iss` claim with whatever hostname
+      # the browser used to log in (localhost:8080, from the host) - not
+      # this container's own route to Keycloak. Without this, token
+      # verification fails with a silent 401 (issuer mismatch) even
+      # though the token is genuinely valid - see auth.py's
+      # KeycloakAuth docstring.
+      KEYCLOAK_ISSUER_URL: http://localhost:8080
+      PABEL_DB_DSN: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      PABEL_AGENT_ID: claude-code
+      PABEL_TRANSPORT: streamable-http
+      PABEL_PUBLIC_URL: http://localhost:8001
+      # FastMCP defaults to binding 127.0.0.1 (loopback inside the
+      # container) - Docker's port mapping can't reach that from outside,
+      #  so this must be 0.0.0.0 for a container specifically.
+      FASTMCP_HOST: 0.0.0.0
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./authority:/app/authority
+      - ../documents:/documents
+    depends_on:
+      - keycloak
+      - postgres
+
+volumes:
+  pgdata:

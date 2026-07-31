@@ -1,0 +1,7 @@
+.env
+.session.json
+audit.jsonl
+realm-org.json
+authority/
+__pycache__/
+.venv/

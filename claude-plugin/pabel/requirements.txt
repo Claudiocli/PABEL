@@ -1,0 +1,10 @@
+# Dev/same-checkout install: pabel-connector lives alongside this plugin in
+# the same repo (PABEL/connector/). All detection/relay/policy logic now
+# lives there, shared with every other agent's adapter - see
+# connector/README.md and docs/phase2-engineering-notes.md sec 9-10.
+#
+# Once pabel-connector is published somewhere reachable without this repo
+# checkout (an internal package index, or a pinned git URL - an open
+# question tracked in connector/README.md), replace the line below
+# accordingly for a real standalone plugin install.
+-e ../../connector

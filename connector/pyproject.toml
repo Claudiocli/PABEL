@@ -1,0 +1,24 @@
+[project]
+name = "pabel-connector"
+version = "0.1.0"
+description = "Agent-agnostic enforcement connector for PABEL CP-ABE-gated documents: one shared core, thin per-agent adapters."
+requires-python = ">=3.10"
+dependencies = [
+    "mcp==1.28.1",
+    "requests>=2.31",
+    "anyio>=4.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[project.scripts]
+pabel-connector = "pabel_connector.cli.main:main"
+pabel-connector-hook = "pabel_connector.hook:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

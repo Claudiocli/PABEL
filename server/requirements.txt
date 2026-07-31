@@ -1,0 +1,4 @@
+mcp==1.28.1
+requests>=2.31
+PyJWT[crypto]>=2.8
+psycopg[binary]>=3.1
