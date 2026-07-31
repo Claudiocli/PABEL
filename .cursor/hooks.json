@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "command": "\"C:\\Users\\claudiol\\OneDrive - NTT DATA EMEAL\\Desktop\\Projects\\PABEL\\server\\.venv\\Scripts\\python.exe\" \".cursor/hooks/pabel_session_init.py\""
+      }
+    ],
+    "beforeReadFile": [
+      {
+        "type": "command",
+        "command": "\"C:\\Users\\claudiol\\OneDrive - NTT DATA EMEAL\\Desktop\\Projects\\PABEL\\server\\.venv\\Scripts\\python.exe\" -m pabel_connector.hook cursor:beforeReadFile"
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "type": "command",
+        "command": "\"C:\\Users\\claudiol\\OneDrive - NTT DATA EMEAL\\Desktop\\Projects\\PABEL\\server\\.venv\\Scripts\\python.exe\" -m pabel_connector.hook cursor:beforeShellExecution"
+      }
+    ],
+    "beforeMCPExecution": [
+      {
+        "type": "command",
+        "command": "\"C:\\Users\\claudiol\\OneDrive - NTT DATA EMEAL\\Desktop\\Projects\\PABEL\\server\\.venv\\Scripts\\python.exe\" -m pabel_connector.hook cursor:beforeMCPExecution"
+      }
+    ]
+  }
+}
