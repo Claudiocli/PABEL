@@ -2,24 +2,7 @@
   "permissions": {
     "allow": [
       "mcp__pabel__whoami",
-      "mcp__pabel__read_document",
-      "Bash(python -m venv .venv)",
-      "Bash(.venv/Scripts/pip install *)",
-      "Bash(.venv/Scripts/python.exe -c ' *)",
-      "Bash(pip index *)",
-      "Bash(.venv/Scripts/python.exe -m py_compile env.py abe.py document.py auth.py oauth_browser.py login.py db.py core.py agents_admin.py mcp_server.py)",
-      "Bash(nerdctl compose *)",
-      "Bash(python -c ' *)",
-      "Bash(python generate_realm.py)",
-      "Bash(.venv/Scripts/python.exe setup_user_profile.py)",
-      "Read(//c/Users/claudiol/OneDrive - NTT DATA EMEAL/Desktop/openabe/**)",
-      "Read(//c/Users/claudiol/OneDrive - NTT DATA EMEAL/Desktop/openabe/deps/openssl/**)",
-      "Read(//c/Users/claudiol/OneDrive - NTT DATA EMEAL/Desktop/openabe/deps/relic/**)",
-      "Bash(nerdctl run *)",
-      "Bash(nerdctl cp *)",
-      "Bash(nerdctl ps *)",
-      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" http://localhost:8080/realms/pabel/.well-known/openid-configuration)",
-      "Bash(.venv/Scripts/python.exe login.py --whoami)"
+      "mcp__pabel__read_document"
     ]
   },
   "env": {
