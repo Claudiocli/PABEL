@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "find \"/c/Users/claudiol/AppData/Local/Temp/claude/c--Users-claudiol-OneDrive---NTT-DATA-EMEAL-Desktop-Projects-PABEL\" -type f -name 'pabel_scratch_*' -delete 2>/dev/null || true"
+            "command": "find \"$HOME/AppData/Local/Temp/claude\" -type f -name 'pabel_scratch_*' -delete 2>/dev/null || true"
           }
         ]
       }
