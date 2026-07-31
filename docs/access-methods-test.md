@@ -1,5 +1,14 @@
 # Accessing `documents/Test.abe`: every method tried, and what came back
 
+**This document is now historical.** It records this repo's own dev-time
+Claude Code configuration *before* a fix made immediately afterward in the
+same session: the permissive behavior described below (Read/Grep/Bash cat
+succeeding on a raw `.abe` file) was a real inconsistency with the
+project's actual design - blocking every read method, not just direct
+OpenABE CLI calls - and has since been corrected. See
+[`docs/access-methods-test-after-fix.md`](access-methods-test-after-fix.md)
+for the same tests re-run against the corrected hook.
+
 This document records a real test, run in this session, of every way an
 AI coding agent (specifically, this Claude Code session, working in this
 repository) could attempt to touch `documents/Test.abe` - the project's

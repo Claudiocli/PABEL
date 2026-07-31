@@ -19,6 +19,9 @@ class NormalizedCall:
     is_write: bool = False
     is_execute: bool = False
     mcp_target: Optional[Tuple[str, str]] = None  # (server, tool), if this call targets an MCP tool
+    write_target: Optional[str] = None  # path actually being written to, if is_write - deliberately
+    # NOT inferred from scanning all of tool_input, so writing prose that merely discusses a
+    # protected path (e.g. documentation) is never confused with writing to one
 
 
 class DecisionKind(Enum):

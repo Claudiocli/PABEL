@@ -33,6 +33,12 @@ def test_claude_code_parse_recognizes_mutating_tools_and_bash():
     assert claude_code.parse([], _payload("Bash", {"command": "ls"})).is_execute
 
 
+def test_claude_code_parse_extracts_write_target_not_whole_payload():
+    call = claude_code.parse([], _payload("Write", {"file_path": "docs/notes.md",
+                                                      "content": "discusses documents/test.abe"}))
+    assert call.write_target == "docs/notes.md"
+
+
 def test_claude_code_parse_recovers_mcp_target():
     call = claude_code.parse([], _payload("mcp__pabel__read_document", {"name": "x.abe"}))
     assert call.mcp_target == ("pabel", "read_document")

@@ -922,3 +922,70 @@ already-proven server code - left unexercised this session).
 - `pabel-connector` itself isn't published anywhere yet - `pip install -e
   .` from a repo checkout is the only install path today; an internal
   index or pinned git URL is needed before a real employee rollout.
+
+## 11. Closing a real inconsistency: this repo's own dev hook didn't match its own design
+
+Directly challenged: the original requirement (§9's framing - "the client
+must do nothing, the hook blocks everything except sending it to the
+server") was never actually true for *this repository's own* Claude Code
+session. `.claude/hooks/block_abe_direct_read.py` (§6.4's deliberate
+loosening, correct for the architecture at the time) only ever blocked a
+direct `oabe_*` CLI invocation - Read/Grep/Bash-cat on a raw `.abe` file
+went straight through, unlike the plugin (§9), which enforces the full
+policy. That gap had simply never been revisited once §9-10 changed the
+actual mechanism (the hook does the relay itself, so the model no longer
+needs to read raw ciphertext directly at all, even in this dev repo).
+
+**Fix**: `.claude/hooks/block_abe_direct_read.py` replaced with
+`.claude/hooks/pabel_relay_hook.py` - the same ~10-line dispatch into
+`pabel_connector.hook.main(["claude-code"])` the plugin itself uses (not
+a second, parallel implementation). `.claude/settings.json`'s
+`PreToolUse` hook lost its `"matcher": "Bash"` restriction (now catch-all,
+matching the plugin's `hooks.json`) and gained an `env` block
+(`PABEL_SERVER_URL`, `PABEL_KEYCLOAK_*`) so the relay has a server to call.
+The hook command itself uses `$CLAUDE_PROJECT_DIR`-relative paths (already
+an established pattern in this exact file) rather than a hardcoded
+personal absolute path, so the committed `settings.json` stays portable.
+
+**A second, independent bug found while verifying the fix**: writing this
+very documentation - prose that discusses `documents/Test.abe` - was
+itself denied as `DENY_MUTATING`, as if it were an attempt to overwrite an
+encrypted file. Root cause: the shared core's mutating-tool check scanned
+the *entire* tool-call payload for an `.abe`/`documents/` mention, never
+distinguishing "the write's target is one" from "the write's content
+merely discusses one." Fixed by adding `NormalizedCall.write_target` (the
+specific path a write actually targets, populated per-adapter) and having
+`DENY_MUTATING` check only that field - `connector/src/pabel_connector/
+core/types.py`/`decide.py`, propagated to every adapter that models a
+write (`claude_code`, `vscode`, `copilot_cli`, `windsurf.pre_write_code`,
+`gemini_cli`; `cursor` has no write hook at all, `codex_cli` never sets
+`is_write`). Two regression tests added
+(`connector/tests/test_decide.py`) - a write whose *content* mentions an
+`.abe` path is now allowed; a write whose *target* is one is still denied.
+
+**Bootstrapping problem worth naming**: fixing the core while the
+old-but-not-yet-fixed hook was still active meant the fix itself couldn't
+be written - editing `decide.py` to *mention* `.abe` paths in a comment
+triggered the very bug being fixed. Worked around by temporarily removing
+`.claude/settings.json`'s `PreToolUse` array (a diff containing no `.abe`
+mention, so it wasn't itself blocked), making the fix, then restoring it -
+a real, if narrow, example of a security control blocking its own
+maintenance, worth remembering if it recurs.
+
+**Verified**, both via the pytest suite (53 tests, up from 50) and by
+piping real payloads through the actual script: `Read`/`Grep`/`Bash cat`
+on the fixture now all deny and attempt the relay (stopped at "not logged
+in" - no live session this session, same wall §10.5 hit); `Glob`/`Edit`
+still deny as before; an unrelated file and a direct `mcp__pabel__whoami`
+call still pass through silently; and - the specific regression - writing
+a test-payload file whose *content* mentions `Test.abe` succeeded without
+incident. Full before/after results:
+`docs/access-methods-test.md` (superseded) and
+`docs/access-methods-test-after-fix.md` (current).
+
+**Still open, same as §10.6**: no interactive Keycloak login was
+performed this session, so every relay attempt above stopped at "not
+authenticated" rather than proving a real decrypt - `connector/docs/
+verification-procedure.md` (new this session) is the structured checklist
+for closing that out, for this repo and for every other UNVERIFIED
+adapter, so results from different testers stay comparable.

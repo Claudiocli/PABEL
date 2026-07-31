@@ -39,12 +39,15 @@ def parse(argv, stdin_bytes) -> NormalizedCall:
     payload = json.loads(stdin_bytes.decode("utf-8") or "{}")
     tool_name = payload.get("tool_name") or ""
     tool_input = payload.get("tool_input") or payload.get("arguments") or {}
+    is_write = tool_name in MUTATING_TOOLS
     return NormalizedCall(
         tool_name=tool_name,
         tool_input=tool_input,
-        is_write=tool_name in MUTATING_TOOLS,
+        is_write=is_write,
         is_execute=tool_name in BASH_TOOL_NAMES,
         mcp_target=_mcp_target(tool_name),
+        write_target=(tool_input.get("file_path") or tool_input.get("path"))
+        if is_write else None,
     )
 
 

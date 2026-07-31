@@ -76,7 +76,7 @@ def _parse_write_code(payload):
     file_path = _field(payload, "file_path", "path") or ""
     content = _field(payload, "content") or ""
     return NormalizedCall(tool_name="Write", tool_input={"file_path": file_path, "content": content},
-                           is_write=True)
+                           is_write=True, write_target=file_path)
 
 
 def _parse_run_command(payload):

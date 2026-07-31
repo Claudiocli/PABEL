@@ -109,6 +109,14 @@ as an open item, not solved here, since it's an infrastructure decision
 for whoever runs the company's deployment, not a design question for the
 connector itself.
 
+## Verifying an adapter against a real install
+
+`docs/verification-procedure.md` is a fixed checklist for exactly this -
+what to install, what to test, what "actually working" (not just "denies
+the call") means, and how to record the result so it's comparable across
+testers and agents. Run it before changing any adapter's status away from
+UNVERIFIED.
+
 ## Known open items
 
 See `docs/known-gaps.md` for Cline/Continue.dev, and `docs/coverage-matrix.md`

@@ -7,6 +7,8 @@ shape - this function never sees or cares which agent produced the call.
 from ..pabel_client.keycloak_client import AuthError
 from ..pabel_client.relay import RelayError, read_document
 from .detection import (
+    ENCRYPTED_FILE,
+    DOCUMENTS_PATH,
     PABEL_MCP_SERVER_NAME,
     find_relayable_file,
     invokes_oabe_binary,
@@ -17,6 +19,20 @@ from .types import Decision, DecisionKind, NormalizedCall
 
 def decide(call: NormalizedCall) -> Decision:
     if call.mcp_target and call.mcp_target[0] == PABEL_MCP_SERVER_NAME:
+        return Decision(DecisionKind.ALLOW)
+
+    if call.is_write:
+        # Checked against write_target specifically, never against the
+        # whole tool_input: a write's *content* legitimately mentioning a
+        # protected path (writing documentation, for instance) must not be
+        # confused with writing *to* one.
+        target_path = call.write_target or ""
+        if ENCRYPTED_FILE.search(target_path) or DOCUMENTS_PATH.search(target_path):
+            return Decision(
+                DecisionKind.DENY_MUTATING,
+                reason="This project has no write/authoring path for .abe files - "
+                       "read_document on the deployed PABEL server is the only "
+                       "sanctioned operation.")
         return Decision(DecisionKind.ALLOW)
 
     if call.is_execute and invokes_oabe_binary(call.tool_input):
@@ -30,13 +46,6 @@ def decide(call: NormalizedCall) -> Decision:
 
     if not mentions_target(call.tool_input):
         return Decision(DecisionKind.ALLOW)
-
-    if call.is_write:
-        return Decision(
-            DecisionKind.DENY_MUTATING,
-            reason="This project has no write/authoring path for .abe files - "
-                   "read_document on the deployed PABEL server is the only "
-                   "sanctioned operation.")
 
     target = find_relayable_file(call.tool_input)
     if target is None:

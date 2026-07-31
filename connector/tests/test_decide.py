@@ -31,8 +31,31 @@ def test_deny_oabe_binary_invocation():
 
 
 def test_deny_mutating_tool_on_abe_file():
-    call = NormalizedCall(tool_name="Write", tool_input={"file_path": "C:/x/test.abe"}, is_write=True)
+    call = NormalizedCall(tool_name="Write", tool_input={"file_path": "C:/x/test.abe"},
+                           is_write=True, write_target="C:/x/test.abe")
     assert decide(call).kind == DecisionKind.DENY_MUTATING
+
+
+def test_allow_write_whose_content_merely_mentions_an_abe_path():
+    """Regression test for a real false-positive found while wiring this
+    project's own dev-repo hook onto the shared core: writing documentation
+    that discusses an .abe path (e.g. this very test file) must not be
+    treated as writing *to* one - only write_target, never the write's
+    content, decides DENY_MUTATING."""
+    call = NormalizedCall(
+        tool_name="Write",
+        tool_input={"file_path": "docs/notes.md", "content": "see documents/test.abe for the fixture"},
+        is_write=True,
+        write_target="docs/notes.md",
+    )
+    assert decide(call).kind == DecisionKind.ALLOW
+
+
+def test_allow_write_with_no_write_target_set():
+    """An adapter that (for whatever reason) can't identify a write target
+    defaults to write_target=None - must not be treated as a match."""
+    call = NormalizedCall(tool_name="Write", tool_input={"content": "mentions test.abe"}, is_write=True)
+    assert decide(call).kind == DecisionKind.ALLOW
 
 
 def test_deny_ambiguous_when_no_concrete_file_found():
