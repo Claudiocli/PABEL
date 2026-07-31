@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .keycloak_client import AuthError, KeycloakClient
 
-CALLBACK_PORT = int(os.environ.get("PABEL_CALLBACK_PORT", "8767"))
+CALLBACK_PORT = int(os.environ.get("PABEL_CALLBACK_PORT", "8766"))
 CALLBACK_PATH = "/callback"
 REDIRECT_URI = f"http://127.0.0.1:{CALLBACK_PORT}{CALLBACK_PATH}"
 
