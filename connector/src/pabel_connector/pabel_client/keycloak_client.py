@@ -76,3 +76,22 @@ class KeycloakClient:
         if resp.status_code != 200:
             raise AuthError(f"token refresh failed: {resp.status_code} {resp.text}")
         return resp.json()
+
+    def client_credentials(self, client_secret):
+        """Client Credentials grant: this installation's own identity
+        (self.client_id + client_secret, obtained once from an admin at
+        provisioning time - see agent_session.py) - no browser, no PKCE,
+        and Keycloak issues no refresh_token for this grant by default, so
+        callers just request a new token again near expiry rather than
+        refreshing one."""
+        try:
+            resp = requests.post(self.token_endpoint, data={
+                "grant_type": "client_credentials",
+                "client_id": self.client_id,
+                "client_secret": client_secret,
+            }, timeout=10)
+        except requests.RequestException as e:
+            raise AuthError(f"cannot reach Keycloak: {e}") from e
+        if resp.status_code != 200:
+            raise AuthError(f"client_credentials grant failed: {resp.status_code} {resp.text}")
+        return resp.json()

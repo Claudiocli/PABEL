@@ -49,6 +49,19 @@ def test_claude_code_render_allow_is_silent():
     assert resp.stdout == "" and resp.exit_code == 0
 
 
+def test_claude_code_render_allow_with_updated_input_injects_agent_token():
+    """The one adapter that acts on Decision.updated_input today - a direct
+    model call to pabel's own tools is allowed through with this
+    installation's agent credential injected, via Claude Code's own
+    hookSpecificOutput.updatedInput field, never visible to the model as a
+    value it supplied itself."""
+    updated = {"content": "ZGF0YQ==", "name": "x.abe", "agent_token": "secret-token"}
+    resp = claude_code.render(Decision(DecisionKind.ALLOW, updated_input=updated))
+    output = json.loads(resp.stdout)["hookSpecificOutput"]
+    assert output["permissionDecision"] == "allow"
+    assert output["updatedInput"] == updated
+
+
 def test_claude_code_render_deny_with_relay_includes_additional_context():
     content = {"sections": ["hello"]}
     resp = claude_code.render(Decision(DecisionKind.DENY_WITH_RELAY, reason="blocked", content=content))

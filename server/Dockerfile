@@ -69,7 +69,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY *.py schema.sql ./
 
-# PABEL_AGENT_ID is required and has no default - each agent's own
-# compose service sets it (see compose.yml). PABEL_DB_DSN, KEYCLOAK_URL,
-# REALM, CLIENT_ID likewise come from the environment, never baked in.
+# One shared server instance for every agent product and installation -
+# no per-agent identity baked in here (see core.resolve_agent()).
+# PABEL_DB_DSN, KEYCLOAK_URL, REALM, CLIENT_ID come from the environment,
+# never baked in.
 CMD ["python", "mcp_server.py"]

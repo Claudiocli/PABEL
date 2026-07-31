@@ -10,13 +10,17 @@ mechanics if the two were merged.
 Shared env vars every agent needs, on top of whatever install-specific
 ones an installer's required_env() adds:
   PABEL_KEYCLOAK_URL, PABEL_KEYCLOAK_REALM, PABEL_KEYCLOAK_CLIENT_ID - the
-  relay hook's own login (see pabel_client/keycloak_client.py).
-  PABEL_SERVER_URL - the deployed, agent-specific mcp-server-<agent>
-  container's streamable-http URL. Not one global value once more than one
-  agent is in play (each container is agent-specific, see
-  server/compose.yml) - installers should also mention the
-  PABEL_SERVER_URL__<AGENT_KEY> override convention for machines running
-  more than one connected agent at once.
+  human's own login (see pabel_client/keycloak_client.py + session.py).
+  PABEL_SERVER_URL - the deployed PABEL server's streamable-http URL. One
+  shared server serves every agent product and every installation of it
+  (see server/compose.yml) - genuinely one global value, the same for
+  every agent installed on a given machine.
+
+Besides these env vars, each installation also needs its own agent
+credential (client_id/client_secret an admin already created via
+server/agents_admin.py create-installation) - see cli/main.py's
+`install` command and pabel_client/agent_session.py. That credential is
+never an env var: it's persisted locally once, at install time.
 """
 
 import json

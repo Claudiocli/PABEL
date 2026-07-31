@@ -4,11 +4,7 @@
       "command": "/absolute/path/to/PABEL/server/.venv/Scripts/python.exe",
       "args": [
         "/absolute/path/to/PABEL/server/mcp_server.py"
-      ],
-      "env": {
-        "PABEL_AGENT_ID": "claude-code",
-        "PABEL_AGENT_API_KEY": "REPLACE_WITH_KEY_FROM_agents_admin.py"
-      }
+      ]
     }
   }
 }

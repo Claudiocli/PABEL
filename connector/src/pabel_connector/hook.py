@@ -22,10 +22,16 @@ def main(argv=None):
     if adapter is None:
         sys.stderr.write(f"pabel-connector-hook: unknown agent key {key!r}\n")
         return 2
+    # Multi-hook-point agents register several keys, one per hook point,
+    # formatted "<agent>:<hookpoint>" (see registry.py) - the agent_id this
+    # installation was enrolled under (agent_session.py's storage key) is
+    # always just the part before the colon, single-hook-point agents
+    # included (their key already equals their plain agent_id).
+    agent_id = key.split(":", 1)[0]
 
     stdin_bytes = sys.stdin.buffer.read()
     call = adapter.parse(rest, stdin_bytes)
-    response = adapter.render(decide(call))
+    response = adapter.render(decide(call, agent_id))
     if response.stdout:
         sys.stdout.write(response.stdout)
     if response.stderr:

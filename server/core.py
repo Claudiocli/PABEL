@@ -18,14 +18,20 @@ see mcp_server.py, the only thing that calls into this module:
          page, which enforces whatever MFA the realm requires.
      There is no weaker fallback identity of any kind in either case: no
      verified token and no session file means no identity, full stop.
-  2. The agent, via resolve_agent(): each agent product is its own
-     container instance with a fixed PABEL_AGENT_ID (not a per-request
-     claim), and a Postgres registry entry (server/agents_admin.py,
-     admin-run only) names a Keycloak realm role a user's token must
-     carry to be allowed to use it. This is deliberately two different
-     failure modes: an agent_id this server has never heard of at all is
-     a hard AuthError (nothing legitimate talks to this server as an
-     unregistered agent); a *known* agent whose required role the current
+  2. The agent, via resolve_agent(): every request carries its own
+     per-installation Keycloak client_credentials token (an `agent_token`
+     tool argument - see mcp_server.py), verified here exactly like the
+     human's (kc.verify() - signature/issuer/expiry), with its verified
+     `azp` claim (KeycloakAuth.client_id_of()) resolved through a Postgres
+     agent_installations row (server/agents_admin.py, admin-run only) to
+     find which agent_id product it belongs to. There is no fixed,
+     trusted-by-deployment-topology identity of any kind: a single shared
+     server instance serves every agent product, and "which agent is
+     calling" is proven fresh on every single call, the same as human
+     identity is. Three failure modes are a hard AuthError (a forged/
+     expired token; a client_id with no installation row, or a revoked
+     one; a disabled agent product) and one is soft: a *known,
+     un-revoked* installation whose product's required role the current
      user's token lacks contributes zero attributes rather than erroring
      - see below.
 
@@ -234,31 +240,48 @@ def current_identity():
             KeycloakAuth.roles_of(claims))
 
 
-def resolve_agent(agent_id, user_roles):
-    """The agent's attribute string - or "" if this user isn't authorized
-    to use it. agent_id is this server instance's own fixed identity (one
-    container per agent product, see server/README.md), not a per-request
-    claim, so there's nothing here for a caller to spoof.
+def resolve_agent(agent_token, user_roles):
+    """Verify a per-installation agent credential (a Keycloak
+    client_credentials access token) and return (agent_id, attributes) -
+    attributes is "" if this user isn't authorized to use this agent.
 
-    Two different failure modes, deliberately:
-      - agent_id isn't in the registry at all (or is disabled): raises
-        AuthError. Nothing legitimate talks to this server under an
-        agent_id it was never configured with.
-      - agent_id is registered, but user_roles doesn't include its
-        required_role (server/agents_admin.py, admin-assigned per user):
-        returns "" rather than raising. This is a *known* agent the
-        current user simply isn't authorized for, so it contributes no
-        attribute to the combined key - the same implicit,
-        section-by-section cryptographic denial as an unregistered
-        agent, just scoped to one user instead of everyone. whoami
-        still succeeds; only agent-gated sections of read_document
-        come back "[ACCESS DENIED]"."""
-    agent = db.get_agent(agent_id)
+    Unlike the human's identity, this token always arrives as an explicit
+    tool argument (see mcp_server.py) rather than the connection's own
+    bearer token, so it is verified here directly - the same check
+    (kc.verify(): signature/issuer/expiry) current_identity() runs for the
+    human's token.
+
+    Three hard AuthError cases - nothing legitimate should ever hit them:
+      - the token doesn't verify at all (forged, expired, wrong issuer).
+      - its verified client_id (KeycloakAuth.client_id_of() - the `azp`
+        claim) has no agent_installations row, or that row is revoked: an
+        installation this server has never heard of, or one an admin has
+        since revoked.
+      - the installation is valid, but its agent_id product is unknown or
+        disabled.
+    One soft case, same semantics as before this was per-installation: the
+    installation is valid, but user_roles doesn't include its product's
+    required_role (server/agents_admin.py, admin-assigned per user) -
+    returns "" rather than raising. This is a *known* agent installation
+    the current user simply isn't authorized for, so it contributes no
+    attribute to the combined key - the same implicit, section-by-section
+    cryptographic denial as an unrecognized installation, just scoped to
+    one user instead of everyone. whoami still succeeds; only agent-gated
+    sections of read_document come back "[ACCESS DENIED]"."""
+    try:
+        claims = kc.verify(agent_token)
+    except AuthError as e:
+        raise AuthError(f"agent credential rejected: {e}") from e
+    client_id = KeycloakAuth.client_id_of(claims)
+    installation = db.get_agent_installation(client_id)
+    if installation is None or installation["revoked"]:
+        raise AuthError(f"unrecognized or revoked agent installation: {client_id!r}")
+    agent = db.get_agent(installation["agent_id"])
     if agent is None or not agent["enabled"]:
-        raise AuthError(f"this server is not configured as a known agent: {agent_id!r}")
+        raise AuthError(f"agent product {installation['agent_id']!r} is disabled")
     if agent["required_role"] not in user_roles:
-        return ""
-    return agent["attributes"]
+        return installation["agent_id"], ""
+    return installation["agent_id"], agent["attributes"]
 
 
 def user_key(username, user_attributes):

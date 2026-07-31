@@ -7,12 +7,13 @@ adapter's relay call uses).
 """
 
 import argparse
+import getpass
 import sys
 from pathlib import Path
 
 from ..installers import base
 from ..installers.registry import INSTALLERS
-from ..pabel_client import session
+from ..pabel_client import agent_session, session
 from ..pabel_client.keycloak_client import AuthError
 
 STATUS_LABELS = {
@@ -41,9 +42,25 @@ def cmd_install(args) -> int:
     print("\nEnv vars needed (ask your admin for the deployed values):")
     for var in env_needed:
         print(f"  {var}")
-    print("\nIf this machine will connect more than one enforced agent to "
-          "different deployed servers at once, override PABEL_SERVER_URL per "
-          f"agent as PABEL_SERVER_URL__{args.agent.upper().replace('-', '_')} instead.")
+
+    # This installation's own agent credential - never self-generated here:
+    # an admin already created it (server/agents_admin.py create-installation)
+    # and handed it over out of band. --client-secret is deliberately also
+    # promptable (hidden input via getpass) rather than only a CLI flag, so
+    # it doesn't have to sit in shell history or a process list.
+    client_id = args.client_id or input(
+        "Agent installation client_id (from your admin): ").strip()
+    client_secret = args.client_secret or getpass.getpass(
+        "Agent installation client_secret (from your admin, hidden): ").strip()
+    if not client_id or not client_secret:
+        sys.stderr.write(
+            "pabel-connector: client_id/client_secret are required - ask your admin "
+            f"to run `agents_admin.py create-installation {args.agent}` and hand you "
+            "the result.\n")
+        return 2
+    agent_session.store_credentials(args.agent, client_id, client_secret)
+    print(f"\nInstallation credentials for {args.agent!r} saved to "
+          f"{agent_session.CREDENTIALS_FILE}.")
     return 0
 
 
@@ -100,6 +117,14 @@ def cmd_doctor(_args) -> int:
     except AuthError as e:
         print(f"  [!!] not logged in: {e}")
         ok = False
+    installed = agent_session.installations()
+    if installed:
+        for agent_id, client_id in installed.items():
+            print(f"  [ok] agent installation for {agent_id!r}: {client_id}")
+    else:
+        print("  [!!] no agent installation credentials stored yet - run "
+              "`pabel-connector install <agent>`")
+        ok = False
     return 0 if ok else 1
 
 
@@ -113,6 +138,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_install = sub.add_parser("install", help="wire the PABEL relay hook into an agent")
     p_install.add_argument("agent", help="agent key, see `pabel-connector list`")
     p_install.add_argument("--dir", default=".", help="project directory to install into (default: cwd)")
+    p_install.add_argument("--client-id", default=None,
+                           help="this installation's Keycloak client_id (from your admin) - prompted if omitted")
+    p_install.add_argument("--client-secret", default=None,
+                           help="this installation's Keycloak client_secret (from your admin) - "
+                                "prompted with hidden input if omitted")
     p_install.set_defaults(func=cmd_install)
 
     p_uninstall = sub.add_parser("uninstall", help="remove the PABEL relay hook from an agent")

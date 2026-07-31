@@ -1,10 +1,10 @@
 """PostgreSQL-backed storage for the PABEL service.
 
-Persists three things: cached user keys (auto-derived from live Keycloak
-attributes, see core.user_key), cached agent-combined keys (see
-core.agent_session_key), the agent registry (admin-managed only, via
-agents_admin.py - never written by the running service itself), and a
-queryable mirror of the audit trail (core.py also appends to audit.jsonl;
+Persists: cached user keys (auto-derived from live Keycloak attributes, see
+core.user_key), cached agent-combined keys (see core.agent_session_key), the
+agent product registry and the agent installation registry (both admin-managed
+only, via agents_admin.py - never written by the running service itself), and
+a queryable mirror of the audit trail (core.py also appends to audit.jsonl;
 neither store's failure blocks the other or the request itself).
 
 Connection string comes from PABEL_DB_DSN (server/.env.example), e.g.:
@@ -102,6 +102,54 @@ def set_agent_enabled(agent_id, enabled):
         cur = conn.execute(
             "UPDATE agents SET enabled = %s, updated_at = now() WHERE agent_id = %s",
             (enabled, agent_id))
+        return cur.rowcount > 0
+
+
+# --- agent installations: the real per-install identity, written only by
+# agents_admin.py (never by the running service, never by a network-reachable
+# path - see schema.sql) --------------------------------------------------
+
+def add_agent_installation(client_id, agent_id, label=None):
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO agent_installations (client_id, agent_id, label) "
+            "VALUES (%s, %s, %s)",
+            (client_id, agent_id, label))
+
+
+def get_agent_installation(client_id):
+    """{'agent_id', 'revoked'} or None."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT agent_id, revoked FROM agent_installations WHERE client_id = %s",
+            (client_id,)).fetchone()
+        if row is None:
+            return None
+        return {"agent_id": row[0], "revoked": row[1]}
+
+
+def list_agent_installations(agent_id=None):
+    """[(client_id, agent_id, label, revoked, enrolled_at, revoked_at), ...],
+    optionally filtered to one product."""
+    with connect() as conn:
+        if agent_id is None:
+            return conn.execute(
+                "SELECT client_id, agent_id, label, revoked, enrolled_at, revoked_at "
+                "FROM agent_installations ORDER BY enrolled_at").fetchall()
+        return conn.execute(
+            "SELECT client_id, agent_id, label, revoked, enrolled_at, revoked_at "
+            "FROM agent_installations WHERE agent_id = %s ORDER BY enrolled_at",
+            (agent_id,)).fetchall()
+
+
+def set_installation_revoked(client_id, revoked):
+    """True if a row was updated, False if client_id doesn't exist."""
+    with connect() as conn:
+        cur = conn.execute(
+            "UPDATE agent_installations SET revoked = %s, "
+            "  revoked_at = CASE WHEN %s THEN now() ELSE NULL END "
+            "WHERE client_id = %s",
+            (revoked, revoked, client_id))
         return cur.rowcount > 0
 
 

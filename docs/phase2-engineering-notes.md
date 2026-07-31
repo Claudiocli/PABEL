@@ -989,3 +989,204 @@ authenticated" rather than proving a real decrypt - `connector/docs/
 verification-procedure.md` (new this session) is the structured checklist
 for closing that out, for this repo and for every other UNVERIFIED
 adapter, so results from different testers stay comparable.
+
+## 12. Reversing "one container per agent": real, per-installation agent authentication (2026-07-31, later session)
+
+### 12.1 What was wrong, and how it was found
+
+A document written to explain the whole system in plain terms (for the
+project owner, not this log) described §4.3/§10's design accurately - and
+that plain description is what exposed the problem: "each agent product
+runs as its own container, with `PABEL_AGENT_ID` fixed at deploy time."
+Said out loud, this is just *"the server trusts whichever container/URL
+you happened to reach"* - there was never a per-request cryptographic
+proof of agent identity at all, only a deployment-topology assumption. The
+project owner rejected this outright, on two counts: it isn't actually
+agent-*agnostic* if a separate server exists per agent (the whole point of
+Phase 4's connector), and an agent's identity must be authenticated, not
+inferred - *"non possiamo fidarci solo dello 'user agent'"* (we can't just
+trust "the user agent").
+
+A first proposal answered "authenticate the agent" with a self-service
+model: `pabel-connector install <agent>` would call a network-reachable
+`/enroll` endpoint on the server, which would itself hold Keycloak-admin
+credentials to mint a new client on request. The project owner rejected
+this shape specifically: *"perché dovresti volere un account admin? Se
+intendi che il plugin debba installarlo, sbagli. Assumi che ogni account
+venga creato dall'azienda"* (why would you want an admin account? If you
+mean the plugin should install it, you're wrong - assume every account is
+created by the company). This is the same principle already on file from
+an earlier round of corrections (§0/project memory: *"Soltanto gli admin
+devono essere in grado di aggiungere attributi"* - only an admin may add
+attributes) applied to a new kind of "attribute": creating a credential
+that lets something act as a registered agent is exactly as privileged an
+operation as setting a user's ABE attributes, and just as exclusively
+admin-only. The fix wasn't a smaller network surface for `/enroll` - it
+was deleting the idea of a network-reachable enrollment path entirely.
+
+### 12.2 Why this isn't the "Keycloak client per agent" already rejected in §4.2
+
+The new design also gives each agent a Keycloak client - which sounds, on
+a skim, like re-proposing §4.2 (rejected for two concrete reasons: Claude
+Code's own MCP OAuth client_id is Dynamic-Client-Registration-generated,
+not a stable admin-chosen string; and how Claude Code isolates OAuth state
+across several configured remote MCP servers was undocumented). Neither
+objection actually applies here, because this is a structurally different
+proposal, not the same one revisited:
+
+- §4.2 wanted the agent's identity to ride inside the **same** OAuth
+  connection Claude Code's own MCP client establishes to talk to the
+  server - i.e. let whatever `client_id` Claude Code's MCP client ends up
+  using **be** the agent identity. That's what made Claude Code's own DCR
+  behavior and multi-server state isolation load-bearing.
+- This design's agent credential is obtained through a **wholly separate**
+  `client_credentials` grant, called directly by the connector's own code
+  (`pabel_client/keycloak_client.py:client_credentials()`) against
+  Keycloak's token endpoint - exactly the same pattern this project
+  already uses for the human's own browser login
+  (`pabel_client/oauth_browser.py`) and every relay call: PABEL's own code
+  talks to Keycloak directly, never through whatever OAuth handling an
+  agent's built-in MCP client applies to its own tool-registration
+  connection. Claude Code's MCP client is never involved in obtaining or
+  presenting this token at all.
+- The client itself is never self-registered (no DCR): an admin creates
+  it explicitly (`agents_admin.py create-installation`), so there's no
+  unpredictable, Keycloak-generated identifier to key a lookup table on -
+  the admin controls and records the mapping (`agent_installations`)
+  directly.
+- There is now only **one** MCP server URL, shared by every agent -
+  "isolating OAuth state across several configured remote servers" is
+  moot when there's only one server to configure in the first place.
+
+### 12.3 Design: per-installation `client_credentials`, provisioned admin-only, never over the network
+
+- **One shared server** (`server/compose.yml`'s `mcp-server-claude-code`
+  service collapses to a single `mcp-server`; `PABEL_AGENT_ID` removed
+  from `mcp_server.py`, `.env.example`, `Dockerfile` entirely).
+- **Every agent installation is its own Keycloak confidential client with
+  a service account** (`client_credentials` grant only - no browser flow,
+  no direct password grant). An admin creates one per employee/machine:
+  `python agents_admin.py create-installation claude-code --label "..."`,
+  which calls the Keycloak Admin REST API using the exact same
+  bootstrap-admin pattern `setup_user_profile.py` already established
+  (password grant against `admin-cli` in the `master` realm, then
+  authenticated calls to `/admin/realms/{realm}/...`), prints
+  `client_id`/`client_secret` **once**, and records the mapping in a new
+  `agent_installations` table (`schema.sql`) - `client_id` (the real
+  Keycloak identity) → `agent_id` (the product, e.g. `"claude-code"`,
+  unchanged in meaning from §4.3's `agents` table). Nothing here is ever
+  reachable over a network from an employee's own machine - the employee
+  only ever *receives* an already-created credential out of band and
+  stores it locally (`pabel-connector install <agent> --client-id ...
+  --client-secret ...`, or `claude-plugin/pabel/enroll.py` for the Claude
+  Code plugin specifically) - `agent_session.py`'s `store_credentials()`
+  is a pure local write, never a call to the PABEL server.
+- **`core.resolve_agent()` is rewritten** from `resolve_agent(agent_id:
+  str, user_roles)` (trusted input) to `resolve_agent(agent_token: str,
+  user_roles)` (a credential that must prove itself): verifies the token
+  exactly like the human's (`auth.py`'s `KeycloakAuth.verify()` -
+  signature/issuer/expiry against Keycloak's JWKS), extracts its `azp`
+  claim (`KeycloakAuth.client_id_of()`, new) as the cryptographically
+  verified installation identity, resolves it through
+  `agent_installations` to find which product it belongs to, then applies
+  the *same* two-failure-mode logic §4.3 already established (unknown/
+  revoked installation or disabled product → hard `AuthError`; known
+  installation whose product's `required_role` the current user's token
+  lacks → soft `""`, unchanged). `whoami`/`read_document` (`mcp_server.py`)
+  both gain a required `agent_token: str` parameter as the only channel
+  for this credential - MCP's own bearer-auth middleware
+  (`token_verifier.py`) still covers exactly one connection-level
+  credential (the human's), unchanged, so the agent's has to travel as an
+  explicit tool argument instead.
+- **Revocation is per-installation, not per-product**: `agents_admin.py
+  revoke-installation CLIENT_ID` flips `agent_installations.revoked` (the
+  fast, authoritative check `resolve_agent()` runs) and best-effort
+  disables the Keycloak client too (defense in depth - an already-issued,
+  unexpired token is unaffected either way, same residual window as any
+  OAuth revocation). Because every row is keyed by `client_id`
+  independently, revoking one compromised laptop can't touch any other
+  installation of the same agent product.
+
+### 12.4 Connector side: a second, per-product-keyed credential store
+
+New module `pabel_client/agent_session.py`, deliberately separate from
+`session.py` (the human's session): different lifecycle (a credential
+obtained once from an admin, not repeated interactive login) and, more
+importantly, **keyed per agent product** (`agent_credentials.json`:
+`{"claude-code": {...}, "cursor": {...}}`) since one machine can run
+several enforced agents side by side, each its own enrolled installation.
+`relay.py`'s `read_document(path, name, agent_id)` now fetches and attaches
+both credentials to every call. Propagating *which* installation's
+credential to use turned out to touch three files, not one - `hook.py`
+derives it from the dispatch key it already receives
+(`agent_id = key.split(":", 1)[0]`, consistent with `registry.py`'s
+existing `<agent>:<hookpoint>` convention for multi-hook-point agents),
+`core/decide.py`'s signature becomes `decide(call, agent_id)`, and
+`relay.py` as above - the seven adapter modules themselves need zero
+changes, confirmed by inspection: none of them imports or calls anything
+from `pabel_client` or agent identity at all, they only ever produce a
+`NormalizedCall`/consume a `Decision`.
+
+### 12.5 A second-order consequence: direct model calls needed a real fix, not just a passthrough
+
+§10.1's own-tool allowlist (`if call.mcp_target[0] == "pabel": return
+ALLOW`) let a model call `whoami`/`read_document` directly - useful, since
+`whoami` is meant partly as self-diagnostics ("why did this section come
+back denied"). Requiring `agent_token` on every call breaks that
+silently: a model has no legitimate way to hold this installation's own
+credential, so a direct call would just fail. Asked explicitly, the
+project owner chose to keep it working rather than accept the regression:
+the hook itself (which already intercepts every tool call, including this
+one) injects the credential on the model's behalf before allowing the
+call through, via `hookSpecificOutput.updatedInput` - confirmed part of
+Claude Code's actual `PreToolUse` schema. `Decision` gained an
+`updated_input` field for this; `decide()`'s `mcp_target` branch now looks
+up this installation's token (`agent_session.access_token(agent_id)`) and
+returns it merged into the original `tool_input`, and
+`adapters/claude_code.py` is - for now - the only adapter whose `render()`
+acts on it. Every other adapter ignores the field and allows the call
+unmodified; the server then rejects the missing/invalid `agent_token` with
+a clean error. That's a **safe fallback, not a hole**: the model still
+never sees a real credential either way, it just doesn't get the
+self-diagnostic convenience yet on agents whose hook schema can't rewrite
+tool input - worth revisiting per-adapter as each one is actually verified
+(`connector/docs/verification-procedure.md`).
+
+### 12.6 Status
+
+Unit tests: `server/tests/` is new this session (the server had none before
+- `test_resolve_agent.py`, `test_auth_client_id_of.py`, monkeypatch style
+matching `connector/tests/`, no live Keycloak/Postgres required to run
+them); `connector/tests/` grew to cover the injection branch, the
+`agent_id` parameter threaded through `decide()`, and the new
+`agent_session.py` module (72 tests total across both packages, all
+passing).
+
+**Verified live**, against the actual running Keycloak + Postgres
+(`nerdctl compose ps` showed both already up from earlier sessions):
+`agents_admin.py create-installation claude-code` really creates a
+confidential client + service account via the Keycloak Admin REST API and
+records it in `agent_installations`; a genuine `client_credentials` grant
+against that client produces a token `core.resolve_agent()` verifies and
+resolves correctly - `("claude-code", "")` with no matching role passed,
+`("claude-code", "agent_claude_code")` with `agent_claude_code_user`
+passed, matching §4.3's soft/hard split exactly. A garbage token is
+rejected (`AuthError: ... invalid token: Not enough segments`); revoking
+the installation (`agents_admin.py revoke-installation`) makes the *same*,
+still-cryptographically-valid token rejected on its very next call
+(`unrecognized or revoked agent installation`) - confirmed the Postgres
+check, not just token expiry, is what actually gates access. On the
+connector side, `pabel-connector install claude-code --client-id ...
+--client-secret ...` stored credentials in `~/.pabel/agent_credentials.json`
+for real, and `agent_session.access_token("claude-code")` obtained a real
+token through it independently of the check above - end to end, admin
+provisioning through connector-side use, without touching any mocks.
+
+**Still open**: no full MCP round trip (a real relay through
+`read_document` over `streamable-http`, or the transparent
+`updated_input` injection inside an actual Claude Code session) was
+exercised, because both still need an interactive human browser+MFA login
+this session never performed - the same wall §10.6/§11 kept hitting.
+Everything upstream of that single missing piece (agent-side
+authentication, specifically) is now confirmed working against real
+infrastructure, not just unit-tested against mocks.

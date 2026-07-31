@@ -150,3 +150,16 @@ class KeycloakAuth:
         Used to gate which agents this user may use - see
         core.resolve_agent()."""
         return list(claims.get("realm_access", {}).get("roles", []))
+
+    @staticmethod
+    def client_id_of(claims):
+        """The verified client identity for a client_credentials (service
+        account) token: Keycloak's `azp` claim - the client_id that obtained
+        this token, stamped by Keycloak itself at issuance, never
+        self-declared by the caller. core.resolve_agent()'s entire trust
+        chain for "which agent installation is this" starts from this
+        value - there is no other source for it."""
+        client_id = claims.get("azp")
+        if not client_id:
+            raise AuthError("token has no azp claim")
+        return client_id

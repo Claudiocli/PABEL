@@ -48,9 +48,10 @@ are this deployment's own values):
 }
 ```
 
-- `PABEL_SERVER_URL` - the deployed `mcp-server-<agent>` container's
-  streamable-http URL (used both by `.mcp.json`'s `whoami`/`read_document`
-  registration and by the relay hook).
+- `PABEL_SERVER_URL` - the deployed PABEL server's streamable-http URL.
+  One shared server serves every agent product and every installation of
+  it - genuinely one global value (used both by `.mcp.json`'s
+  `whoami`/`read_document` registration and by the relay hook).
 - `PABEL_KEYCLOAK_*` - used only by the relay hook's own login (below);
   must match the Keycloak realm/client the deployed server itself trusts.
 
@@ -60,6 +61,24 @@ subprocess, outside whatever environment runs Claude Code itself):
 ```
 pip install -r <plugin-install-path>/requirements.txt
 ```
+
+## Enroll this installation (one-time, admin-provisioned)
+
+Ask your PABEL admin to run `agents_admin.py create-installation claude-code
+--label "your name/laptop"` on the server - this creates a real Keycloak
+credential unique to *your* installation (never something this plugin
+generates or requests for itself) and prints a `client_id`/`client_secret`
+pair once. Once you have both:
+
+```
+python <plugin-install-path>/enroll.py CLIENT_ID CLIENT_SECRET
+```
+
+(omit `CLIENT_SECRET` to be prompted for it with hidden input instead of
+passing it on the command line). This is what proves *which agent
+installation* is calling on every relay - see
+`server/README.md` and `docs/phase2-engineering-notes.md` for why a
+shared server can no longer just trust whichever URL it was reached at.
 
 ## Log in (one-time, then as needed)
 
@@ -71,16 +90,18 @@ Opens your system browser at Keycloak's hosted login page (MFA included,
 whatever the realm requires) and saves a session the relay hook reuses and
 refreshes automatically. `python login.py --logout` clears it.
 
-**Note - two separate logins can exist**: this login is used only by the
-relay hook (the mechanism that substitutes real content for a blocked
-direct file read). Claude Code's own MCP client separately handles
-authentication for this plugin's `.mcp.json`-registered tools (`whoami`,
-and `read_document` if the model ever calls it directly with content it
-already has) - it will prompt you to sign in via its own `/mcp` panel the
-first time one of those is called, independent of the login above. Both
-ultimately present a token the same deployed server verifies identically,
-so this isn't a security gap - just an extra, currently unavoidable,
-one-time prompt.
+**Note - three separate credentials are in play, not one**: `enroll.py`
+above establishes *which agent installation* this is (server-verified on
+every relay call); `login.py` establishes *which human* you are for the
+relay hook specifically (the mechanism that substitutes real content for
+a blocked direct file read). Claude Code's own MCP client separately
+handles authentication for this plugin's `.mcp.json`-registered tools
+(`whoami`, and `read_document` if the model ever calls it directly) - it
+will prompt you to sign in via its own `/mcp` panel the first time one of
+those is called, independent of `login.py`. All three ultimately present
+credentials the same deployed server verifies for real, so none of this
+is a security gap - just the accounting for what "logged in" actually
+means here.
 
 ## Known open items
 

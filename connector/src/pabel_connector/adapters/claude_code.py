@@ -16,6 +16,14 @@ Wire format: stdin is one JSON object `{"tool_name": ..., "tool_input":
 proceed normally on empty stdout, or be denied per
 `hookSpecificOutput.permissionDecision`. MCP tool calls arrive with
 `tool_name` of the form `mcp__<server>__<tool>`.
+
+Also the only adapter today that acts on `Decision.updated_input`
+(`hookSpecificOutput.updatedInput`, confirmed part of Claude Code's own
+PreToolUse schema) - used to inject this installation's own agent
+credential into a direct model call to pabel's own tools without the model
+ever seeing it. Every other adapter ignores this field for now; see
+types.py's Decision.updated_input docstring for why that's a safe, if
+less convenient, fallback rather than a gap.
 """
 
 import json
@@ -52,7 +60,17 @@ def parse(argv, stdin_bytes) -> NormalizedCall:
 
 def render(decision: Decision) -> RenderedResponse:
     if decision.kind == DecisionKind.ALLOW:
-        return RenderedResponse()  # no output at all - the tool call proceeds untouched
+        if decision.updated_input is None:
+            return RenderedResponse()  # no output at all - the tool call proceeds untouched
+        # A direct call to pabel's own tools, allowed through with this
+        # installation's agent credential injected - see core/decide.py.
+        return RenderedResponse(stdout=json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+                "updatedInput": decision.updated_input,
+            }
+        }))
 
     output = {
         "hookSpecificOutput": {

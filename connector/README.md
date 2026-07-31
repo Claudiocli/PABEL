@@ -54,14 +54,25 @@ Then, per agent:
 
 ```
 pabel-connector list                     # see every registered agent and its status
-pabel-connector install <agent> --dir .  # wire the hook into the given project directory
+pabel-connector install <agent> --dir . --client-id ... --client-secret ...
 pabel-connector uninstall <agent> --dir .
 ```
+
+`--client-id`/`--client-secret` are this specific installation's own
+Keycloak `client_credentials` credential - an admin creates it
+(`server/agents_admin.py create-installation <agent>`) and hands both
+values to you out of band; `install` only ever stores what it's given
+(prompting for the secret with hidden input if you omit it from the
+command line). This is what proves *which installation* is calling on
+every relay - see `server/README.md` and `docs/phase2-engineering-notes.md`
+for why a single shared server can no longer just trust whichever URL it
+was reached at.
 
 `claude-code` is a special case: it already has a dedicated, tested plugin
 (`claude-plugin/pabel/`) using Claude Code's own marketplace mechanism -
 `pabel-connector install claude-code` just prints those install steps
-rather than writing a competing hooks.json by hand.
+rather than writing a competing hooks.json by hand; use
+`claude-plugin/pabel/enroll.py` for its credential instead.
 
 ## Configure
 
@@ -71,13 +82,15 @@ this list after each `install`):
 - `PABEL_KEYCLOAK_URL` / `PABEL_KEYCLOAK_REALM` / `PABEL_KEYCLOAK_CLIENT_ID`
   - used by the relay's own login (see "Log in" below); must match the
   realm/client the deployed server trusts.
-- `PABEL_SERVER_URL` - the deployed `mcp-server-<agent>` container's
-  streamable-http URL. **Not one global value once more than one agent is
-  in play** - each deployed server container is agent-specific (see
-  `server/compose.yml`). If a machine runs more than one enforced agent
-  against different deployed servers at once, override per agent as
-  `PABEL_SERVER_URL__<AGENT_KEY>` (e.g. `PABEL_SERVER_URL__CURSOR`),
-  uppercased with `-` replaced by `_`.
+- `PABEL_SERVER_URL` - the deployed PABEL server's streamable-http URL.
+  One shared server serves every agent product and every installation of
+  it (see `server/compose.yml`) - genuinely one global value, the same
+  for every agent installed on a given machine.
+
+Each installation also needs its own agent credential (`--client-id`/
+`--client-secret` at install time, above) - never an env var, since it's
+specific to one installation rather than shared across a whole agent
+product.
 
 ## Log in (one-time, then as needed)
 
@@ -91,14 +104,17 @@ Opens your system browser at Keycloak's hosted login page (MFA included,
 whatever the realm requires) and saves a session every adapter's relay
 call reuses and refreshes automatically.
 
-**Note - two separate logins can exist**: this login is used only by the
+**Note - three separate credentials are in play, not one**: `install`'s
+`--client-id`/`--client-secret` establishes *which agent installation*
+this is (server-verified on every relay call - see "Configure" above);
+this login establishes *which human* you are, used only by the
 enforcement adapter/hook (the mechanism that substitutes real content for
 a blocked direct file read). An agent's own MCP client may separately
 handle authentication for its passively-registered `whoami`/`read_document`
-tools (if the model ever calls them directly with content it already
-holds) - both ultimately present a token the same deployed server verifies
-identically, so this isn't a security gap, just an extra, currently
-unavoidable, one-time prompt per agent.
+tools (if the model ever calls them directly) - all three ultimately
+present credentials the same deployed server verifies for real, so none
+of this is a security gap, just the accounting for what "logged in" and
+"installed" actually mean here.
 
 ## Distribution
 

@@ -34,13 +34,16 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
-  # One agent product = one container instance (see docs/phase2-engineering-notes.md
-  # §4 for why: each is a genuinely separate remote MCP server URL, sidestepping
-  # any question of how an MCP client isolates OAuth state across several servers).
-  # Register the agent first (python agents_admin.py add claude-code ...), create
-  # its required_role in Keycloak, then add one block like this per agent - only
-  # PABEL_AGENT_ID and the published port need to change.
-  mcp-server-claude-code:
+  # A single shared server instance for every agent product and every
+  # installation of it (see docs/phase2-engineering-notes.md for why this
+  # replaced an earlier one-container-per-agent design): "which agent is
+  # calling" is proven per request by a real Keycloak client_credentials
+  # token (core.resolve_agent()), not by which container/URL was reached.
+  # Register an agent product (python agents_admin.py add claude-code ...),
+  # create its required_role in Keycloak, then create one installation per
+  # employee (python agents_admin.py create-installation claude-code ...) -
+  # none of that touches this service definition.
+  mcp-server:
     build: .
     env_file: .env
     environment:
@@ -57,7 +60,6 @@ services:
       # KeycloakAuth docstring.
       KEYCLOAK_ISSUER_URL: http://localhost:8080
       PABEL_DB_DSN: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      PABEL_AGENT_ID: claude-code
       PABEL_TRANSPORT: streamable-http
       PABEL_PUBLIC_URL: http://localhost:8001
       # FastMCP defaults to binding 127.0.0.1 (loopback inside the

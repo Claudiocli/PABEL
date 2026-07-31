@@ -39,6 +39,12 @@ class Decision:
     kind: DecisionKind
     reason: Optional[str] = None
     content: Optional[dict] = None  # read_document's structured result - only set on DENY_WITH_RELAY
+    updated_input: Optional[dict] = None  # ALLOW only: tool_input with an agent_token injected -
+    # a direct model call to pabel's own whoami/read_document needs this argument, which the
+    # model itself must never see or supply; an adapter that can rewrite the call's input before
+    # allowing it through (Claude Code's updatedInput) should. One that can't should ignore this
+    # field and allow the call unmodified - the server then rejects the missing/empty agent_token
+    # with a clean AuthError, a safe (if less convenient) fallback, never a security hole.
 
 
 @dataclass(frozen=True)
