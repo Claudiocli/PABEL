@@ -40,41 +40,51 @@ python agents_admin.py create-installation claude-code --label "alice's laptop"
 nerdctl compose up -d mcp-server   # one single, shared server for every agent
 ```
 
+Repeat the `add`/`create-installation` pair once per agent **product**
+you want to support (`cursor`, `vscode`, ...) and once per **employee**
+installing it, respectively - the server itself (`compose up`) is started
+only once regardless of how many agents/employees end up using it.
 `create-installation` prints a `client_id`/`client_secret` pair once, for
-each employee - hand it to them out of band, for use in step 2. Full
+that one employee - hand it to them out of band, for use in step 2. Full
 detail, including what each step actually does and why:
 [`server/README.md`](server/README.md).
 
 ### 2. Install the enforcement for your AI coding agent (each employee, on their own machine)
 
-**Claude Code** (the only agent verified against a real, live install):
-
-```
-/plugin marketplace add <path-or-git-url-to-claude-plugin>
-/plugin install pabel@pabel-marketplace
-python <plugin-install-path>/enroll.py CLIENT_ID CLIENT_SECRET   # from step 1
-```
-
-Full configuration: [`claude-plugin/pabel/README.md`](claude-plugin/pabel/README.md).
-
-**Any other supported agent** (Cursor, Windsurf, VS Code, GitHub Copilot
-CLI, Gemini CLI - and a deliberately partial, Bash-only fit for OpenAI
-Codex CLI):
+One command, the same for **any** supported agent:
 
 ```
 pip install -e connector
 pabel-connector install <agent> --dir . --client-id CLIENT_ID --client-secret CLIENT_SECRET
 ```
 
-`--client-id`/`--client-secret` are the credential `create-installation`
-printed in step 1 - proof of *which installation* this is, verified by
-the server on every call (never just trusted because of which URL it
-reached). `pabel-connector list` shows every registered agent and its
-verification status - **read this before trusting anything but Claude
-Code in production**, since most adapters are built to each vendor's own
-documentation and not yet confirmed against a live install. Full detail:
-[`connector/README.md`](connector/README.md) and
-[`connector/docs/coverage-matrix.md`](connector/docs/coverage-matrix.md).
+`<agent>` is `claude-code`, `cursor`, `windsurf`, `vscode`, `copilot-cli`,
+`gemini-cli`, or `codex-cli` (`pabel-connector list` shows the full set
+and each one's verification status). `--client-id`/`--client-secret` are
+the credential `create-installation` printed in step 1 for this specific
+employee - proof of *which installation* this is, verified by the server
+on every call, never just trusted because of which URL it reached.
+
+**Read the verification status before trusting anything in production**:
+today only `claude-code` is confirmed against a real, live install - every
+other adapter is built strictly to each vendor's own documentation and not
+yet tried live. Full detail: [`connector/README.md`](connector/README.md)
+and [`connector/docs/coverage-matrix.md`](connector/docs/coverage-matrix.md).
+
+**Claude Code specifically** also needs its dedicated marketplace plugin -
+the command above already stores the installation credential and prints
+these same two lines, since Claude Code's own plugin mechanism replaces
+hand-written hook config entirely (nothing for `pabel-connector` to write):
+
+```
+/plugin marketplace add <path-or-git-url-to-claude-plugin>
+/plugin install pabel@pabel-marketplace
+```
+
+Full configuration: [`claude-plugin/pabel/README.md`](claude-plugin/pabel/README.md)
+(also has `enroll.py`/`login.py`, self-contained equivalents of `install`/
+`login` above for anyone who only wants the Claude Code plugin and would
+rather not install `connector/` at all).
 
 ### 3. Log in as yourself
 
