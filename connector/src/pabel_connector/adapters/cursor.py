@@ -36,6 +36,7 @@ tighten this once a real payload can be inspected.
 import json
 
 from ..core.types import Decision, DecisionKind, NormalizedCall, RenderedResponse
+from .base import fold_content_into_reason
 
 PABEL_TOOL_NAMES = {"whoami", "read_document"}
 
@@ -44,13 +45,9 @@ def _render(decision: Decision) -> RenderedResponse:
     if decision.kind == DecisionKind.ALLOW:
         return RenderedResponse(stdout=json.dumps({"permission": "allow"}))
 
-    agent_message = decision.reason
-    if decision.content is not None:
-        agent_message = f"{decision.reason}\n\nread_document result:\n{json.dumps(decision.content)}"
-
     return RenderedResponse(stdout=json.dumps({
         "permission": "deny",
-        "agent_message": agent_message,
+        "agent_message": fold_content_into_reason(decision),
         "user_message": "PABEL: direct .abe access blocked - relayed result provided to the agent.",
     }))
 

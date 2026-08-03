@@ -32,9 +32,12 @@ def test_hook_wiring_not_ok_when_config_exists_but_hook_was_removed(tmp_path):
 
 
 def test_hook_wiring_ok_skipped_for_installer_with_no_config_file(tmp_path):
-    # claude-code defers entirely to its own plugin - nothing for this
-    # check to look at, so it must not be flagged as broken.
-    assert _hook_wiring_ok("claude-code", tmp_path) is None
+    # cline/continue-dev are documented gaps with no config file at all -
+    # nothing for this check to look at, so they must not be flagged as
+    # broken. claude-code now writes real config like every other agent
+    # (see installers/claude_code.py) and is covered by the same
+    # hook-wiring check, not skipped anymore.
+    assert _hook_wiring_ok("cline", tmp_path) is None
 
 
 def test_hook_wiring_not_ok_for_unregistered_agent(tmp_path):

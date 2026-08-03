@@ -7,6 +7,11 @@ no-matcher hook does.
 STATUS: UNVERIFIED beyond the confirmed config shape/location - whether
 folding the relay's content into `reason` (see adapters/gemini_cli.py)
 actually surfaces it usefully to the model still needs a live check.
+
+Supports `--global` (writes `~/.gemini/settings.json` instead of
+`<project>/.gemini/settings.json`) - Gemini CLI's own docs confirm a
+user-level settings file at the same relative shape, applied to every
+project unless a project-level settings.json overrides it.
 """
 
 from pathlib import Path
@@ -17,6 +22,7 @@ name = "gemini-cli"
 status = "unverified"
 
 CONFIG_RELATIVE_PATH = Path(".gemini") / "settings.json"
+GLOBAL_CONFIG_RELATIVE_PATH = CONFIG_RELATIVE_PATH
 HOOK_KEYS = ["gemini-cli"]
 
 
@@ -28,8 +34,8 @@ def config_path(base_dir: Path) -> Path:
     return base_dir / CONFIG_RELATIVE_PATH
 
 
-def install(base_dir: Path) -> str:
-    path = config_path(base_dir)
+def install(base_dir: Path, global_: bool = False) -> str:
+    path = base.global_config_path(GLOBAL_CONFIG_RELATIVE_PATH) if global_ else config_path(base_dir)
     data = base.read_json(path)
     hooks = data.setdefault("hooks", {})
     before_tool = hooks.setdefault("BeforeTool", [])
@@ -48,4 +54,5 @@ def install(base_dir: Path) -> str:
         })
 
     base.write_json(path, data)
-    return f"Wrote a catch-all BeforeTool hook to {path}."
+    scope = " (global - applies to every project)" if global_ else ""
+    return f"Wrote a catch-all BeforeTool hook to {path}{scope}."

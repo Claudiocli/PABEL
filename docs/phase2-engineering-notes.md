@@ -1594,3 +1594,265 @@ naming. The lesson this session keeps re-teaching itself (§2 point 2,
 external system beats re-deriving it from documentation or memory, and a
 "BUILT-TO-SPEC" label is only as good as whichever spec was actually
 read.
+
+## 16. The auto-login flow, a second PowerShell bug, direct MCP tools, and removing Claude Code's special case (2026-08-03, later session)
+
+Picking up right where §15 left off: with vscode's path/schema/tool-name
+bugs fixed, a real live retest surfaced two more concrete problems -
+neither a vendor-documentation gap this time, both real bugs in this
+package's own code.
+
+**16.1 A second real PowerShell bug.** The retest failed with a literal
+PowerShell `ParserError`:
+```
+Warning from Pre-Tool Use Hook:
+Unexpected token '-m' in expression or statement.
+```
+VS Code's confirmed execution model: the `command`/`windows` hook fields
+run through `powershell -Command` on Windows. `installers/base.py`'s
+`hook_command()` produces `"<python.exe>" -m pabel_connector.hook vscode`
+- a bare quoted path followed by arguments, which PowerShell parses as a
+standalone string expression and refuses to treat as a command unless
+prefixed with the call operator `&`. Fixed by adding
+`hook_command_windows()` (prefixes `&`) and writing it as every affected
+installer's `"windows"` override field (vscode, copilot-cli - both share
+this execution path; Claude Code's own working config proves this is NOT
+a universal Windows rule, just this specific execution mechanism, so its
+installer deliberately does not get this override). `merge_hook_list()`
+was also changed to *upsert* `extra_fields`/`timeout` into an
+already-existing entry rather than skip it once `command` matches - so a
+prior install() missing a fix doesn't require deleting the config file to
+pick up the correction, just re-running install().
+
+**16.2 The real reason "I already logged in" never took.** Tracing why a
+completed-looking browser login (opened via a manual `pabel-connector
+login` a model ran from a terminal) never persisted a session:
+`oauth_browser.py`'s callback listener only waits 180s for the redirect.
+Every agent's own default hook-execution timeout (often ~60s) was killing
+the hook subprocess - and with it, any login it triggered - long before a
+human could realistically finish an MFA flow in a separate browser tab
+during a multi-turn chat conversation. Fixed in two parts:
+- `installers/base.py` gained `HOOK_TIMEOUT_SECONDS = 200` (comfortably
+  above 180s), written as every installed hook entry's own `"timeout"`
+  field (via the same upsert path as 16.1) - the connector's hook config
+  telling the host how long it's allowed to block, not a config on
+  session.login() itself.
+- `pabel_client/relay.py` gained `read_document_with_login()`: try the
+  relay: on `AuthError` (no valid session), run `session.login()` -
+  blocking, opens the real system browser, waits for the human to finish -
+  then retry exactly once. `core/decide.py`'s hook path now calls this
+  instead of orchestrating the retry itself, so mcp_local_server.py's
+  direct-tool-call path (16.3) gets identical behavior for free, not a
+  second, divergent implementation of the same idea.
+
+This changes the fundamental UX: a blocked read no longer just denies with
+"go run `pabel-connector login` yourself" - the hook blocks, opens the
+browser itself, and (if the human finishes in time) relays the decrypted
+result in the same tool call. Verified live: a real vscode Copilot session
+against a `Test.abe` fixture came back `[ACCESS DENIED]` under a specific
+human identity (Alice) - the first fully working, error-free pass through
+hook -> auto-login -> relay -> CP-ABE policy evaluation for any agent other
+than Claude Code this project has seen.
+
+**16.3 mcp_local_server.py: whoami/read_document/login as direct tools,
+not just a reactive relay.** A live gap found in the same test: the model
+never called the deployed server's `whoami` tool to self-diagnose, and
+investigation showed why - that test's workspace had no MCP server
+registration for VS Code at all, so the tool was never visible to it in
+the first place, not a model oversight.
+
+Rather than exposing three independently-callable tools a model would
+have to sequence itself (guessing "should I login first, or try reading,
+or check whoami?"), the fix centralizes the guided flow: new module
+`pabel_connector/mcp_local_server.py`, a stdio MCP server bundled with the
+package itself (no PABEL server repo checkout needed - only the
+already-installed connector), exposing:
+- `read_document(path, name)` - calls the exact same
+  `relay.read_document_with_login()` the hook path uses, so a direct call
+  and a hook-relayed call can never behave differently.
+- `whoami()` - relays to the deployed server's own whoami (new
+  `relay.whoami()`, refactored alongside `read_document()` onto a shared
+  `_relay_call()`/`_call_tool()` helper instead of two near-duplicate
+  MCP-client code paths).
+- `login()` - exposes `session.login()` directly as a callable tool, for
+  explicit/proactive re-authentication.
+
+Registered under server name `"pabel-connector"` (distinct from the
+deployed server's own `"pabel"`) via a new
+`core/detection.py:PABEL_CONNECTOR_MCP_SERVER_NAME` constant and a second,
+simpler unconditional-ALLOW branch in `decide()` - unlike calls to `"pabel"`
+directly, no `agent_token` needs injecting, since this local server
+already knows its own agent_id (baked in at registration time via
+`installers/base.py:mcp_server_command()`, an argv list rather than a
+shell string - stdio MCP registration takes `command`/`args` as separate
+JSON fields, so unlike hooks there's no shell-quoting problem here at all).
+Wired into `installers/vscode.py` (writes `.vscode/mcp.json`, confirmed
+schema: `{"servers": {"<name>": {"type": "stdio", "command", "args"}}}`,
+code.visualstudio.com/docs/agent-customization/mcp-servers).
+
+**16.4 Removing Claude Code's special case entirely.** Prompted directly:
+*"Il plugin di claude code non deve avere una corsia preferenziale. Tutto
+questo progetto deve essere per tutti i modelli, non solo alcuni. Claude
+code deve seguire le regole come tutti gli altri."* Until now,
+`installers/claude_code.py` didn't write any config at all - it printed
+instructions to install a separate marketplace plugin
+(`claude-plugin/pabel/`), the one agent product with its own distinct
+distribution mechanism. That plugin is now **deleted**. `installers/
+claude_code.py` writes real config exactly like every other installer:
+- `.claude/settings.json`'s `hooks.PreToolUse`, in Claude Code's confirmed
+  nested shape (`[{"hooks": [{"type": "command", "command", "timeout"}]}]`
+  - different from the flat list every other installer's config uses,
+  handled by a small dedicated `_merge_nested_hook_list()` rather than
+  forcing this one different shape into the shared `base.merge_hook_list`).
+- `.mcp.json`'s `mcpServers`: both `"pabel"` (http, the deployed shared
+  server - already working via `decide()`'s existing agent_token-injection
+  branch) and `"pabel-connector"` (stdio, §16.3's local tools).
+
+`cli/main.py`'s doctor hook-wiring check no longer special-cases
+Claude Code as "nothing to check" - it now has real config like everyone
+else, so it's checked like everyone else. Every reference to
+`claude-plugin/` across READMEs and module docstrings was updated or
+removed; the two dated test-session documents under `docs/` that predate
+this change were left as accurate historical snapshots, not rewritten.
+
+Test suite: 98 passing (`connector/tests/`), including new
+`test_relay.py` (the login-retry mechanics in isolation) and
+`test_mcp_local_server.py` (the three new tools, each error path reported
+as a structured `{"ok": false, ...}` result rather than raised, since a
+model calling an MCP tool should get a normal tool result back, not an
+exception).
+
+**16.5 `--global`: one install, every project, where confirmed.** A
+genuinely bigger architectural question came up in the same conversation:
+should installation target a single, user-level/global config location per
+agent instead of writing into every individual project directory via
+`--dir`? Rather than guess (the exact mistake vscode's original
+`.vscode/hooks.json` path already was), each candidate agent's real
+user-level hook location was checked against current docs before writing
+any code:
+
+- **Claude Code** - `~/.claude/settings.json`, the well-established real
+  user-settings location (not something this session needed to research).
+- **Cursor** - `~/.cursor/hooks.json`, already confirmed in §15's re-audit.
+- **Gemini CLI** - `~/.gemini/settings.json`, confirmed via
+  geminicli.com/google-gemini's own docs.
+- **Windsurf** - confirmed via docs.devin.ai/desktop/cascade/hooks (current
+  redirect target of docs.windsurf.com/windsurf/cascade/hooks):
+  `~/.codeium/windsurf/hooks.json` - genuinely NOT the same relative shape
+  as its workspace path (`.windsurf/hooks.json`), unlike every other
+  `--global`-supporting agent above. A third, system-level tier also exists
+  (`C:\ProgramData\Windsurf\hooks.json` on Windows, an org-wide admin
+  policy) that this package has no reason to write to.
+- **Copilot CLI** - the `~/.copilot/hooks/` directory already confirmed in
+  §15 (each `*.json` file inside is independent, so this needs no
+  read-merge logic at all, just its own dedicated filename).
+- **VS Code** - **no confirmed global location found** for its native agent
+  hooks specifically (only a UI toggle over internal settings storage, not
+  a raw file). `--global` is rejected outright for this agent with a clear
+  error rather than silently guessing a second wrong path for the same
+  feature that already burned this project once.
+
+Implementation: `installers/base.py:global_config_path()` covers the
+common case (home-rooted, identical relative shape to the project path);
+Windsurf and Copilot CLI compute their own since their global shape
+differs. Every install()/uninstall() gained a `global_: bool = False`
+parameter; `cli/main.py` gained a `--global` flag on `install`/`uninstall`,
+rejected up front (before calling into any installer) for agents lacking
+`GLOBAL_CONFIG_RELATIVE_PATH`; `pabel-connector list` now shows which
+agents support it. MCP server registration (whoami/read_document/login)
+deliberately stays per-project regardless of `--global` - Claude Code's own
+user-scope MCP mechanism is a CLI-managed store (`claude mcp add --scope
+user`), not a plain file this package can confirm the shape of, and this
+wasn't investigated further this session.
+
+Test suite: 107 passing, including `Path.home()` monkeypatched per test to
+avoid ever touching this machine's real `~/.pabel/agent_credentials.json`
+or actual global hook files while testing `--global`.
+
+## 17. VS Code goes VERIFIED, a real async crash, and a pre-release cleanup pass (2026-08-03, later session)
+
+**17.1 A real crash, live: "Already running asyncio in this thread".**
+The very next live vscode test (mcp_local_server.py's tools now wired into
+`.vscode/mcp.json` per §16.3) hit a genuine bug, not a vendor-doc gap:
+`mcp_local_server.py`'s tool handlers were plain sync functions calling
+`pabel_client/relay.py`'s `read_document()`/`whoami()`, which internally
+did `anyio.run(...)` - starting a *second*, nested event loop inside
+FastMCP's own already-running one. Fixed by splitting every relay function
+into an async core (`read_document_async`, `whoami_async`,
+`read_document_with_login_async`) plus a sync `anyio.run()`-based wrapper
+kept only where a real sync caller exists (`core/decide.py`'s hook path,
+a plain subprocess with no event loop of its own). `mcp_local_server.py`'s
+tool handlers became `async def`, calling the async versions directly via
+`await` - never anyio.run() from inside a running loop again.
+
+**17.2 The double-login report.** Same session: "mi ha fatto loggare 2
+volte... se è già loggato non dovrebbe aprire il browser". Root cause:
+`mcp_local_server.py`'s `login()` tool called `session.login()`
+unconditionally, with no check for an already-valid session - a real gap,
+not a race condition. Fixed: check `session.access_token()` first, return
+`{"ok": true, "already_logged_in": true}` without touching the browser if
+it succeeds.
+
+**17.3 VS Code promoted to VERIFIED.** With both fixed, the next live
+attempt succeeded fully: blocked read → automatic browser+MFA login →
+relay → correct per-user `[ACCESS DENIED]` result, the first fully clean
+pass for any agent other than Claude Code this project has seen. VS Code's
+status is now VERIFIED in `docs/coverage-matrix.md` and every README - not
+"built to spec," confirmed against the real thing, same bar Claude Code
+was held to.
+
+**17.4 Two audit passes, prompted directly by the user** ("questi test
+sono necessari?... fai un audit" and later "controllo approfondito di
+codice non più utilizzato... accorpa ciò che è accorpabile"):
+
+- Read all 109 tests against current code. Found one genuinely redundant
+  test (`test_relay.py`'s nested-event-loop check duplicated coverage
+  already in `test_mcp_local_server.py`) and, more importantly, found that
+  the async split in §17.1 had left `relay.read_document()`/`relay.whoami()`
+  (the plain sync, non-login wrappers) with **no caller anywhere** -
+  `core/decide.py` uses `read_document_with_login`, `mcp_local_server.py`
+  uses the `_async` names directly. Both dead functions removed rather than
+  kept "for symmetry" with no real user.
+- A second pass across the whole `connector/` package (not just tests):
+  `pyflakes` came back clean (no unused imports/names anywhere), and a
+  function-definition-vs-usage grep found nothing else orphaned. Found and
+  fixed two genuine mechanical duplications instead: `cursor.py`/
+  `windsurf.py`'s identical multi-hook-point install loops, and
+  `vscode.py`/`copilot_cli.py`'s identical single-hook-with-`windows`-
+  override body - both now share `installers/base.py:
+  install_multi_point_hooks()`/`install_windows_aware_hook()`. Also found
+  the exact same 3-line "fold content into reason" snippet duplicated
+  verbatim across four adapters (`cursor`, `windsurf`, `gemini_cli`,
+  `copilot_cli`) - consolidated into `adapters/base.py:
+  fold_content_into_reason()`. Also found and cleaned up untracked build
+  artifacts (`connector/build/`, `connector/dist/`) left over from an
+  earlier wheel-build demo, with a `connector/.gitignore` added so they
+  don't recur.
+- `docs/coverage-matrix.md` rewritten from a long dated narrative into an
+  actual table (agent × status/hook-path/`--global`/blocking-channel/
+  content-channel/direct-MCP-tools/live-verified), with per-agent open
+  questions kept as a short list below it rather than prose woven through
+  the table. The narrative/history stays here, in this file, per this
+  project's own established convention - coverage-matrix.md is now a
+  current-state reference, not a story.
+- `connector/README.md`'s coverage table, "Known open items", and
+  "Distribution" sections updated to match: VS Code VERIFIED, a new
+  "Direct MCP tools" column (Claude Code and VS Code only so far - Cursor/
+  Windsurf/Gemini CLI/Copilot CLI don't have `mcp_local_server.py` wired in
+  yet, an open item, not an oversight), and distribution now pointing at
+  a GitHub Release wheel (see §17.5) instead of "not published anywhere".
+
+Test suite: 108 passing after the cleanup (109 minus the one redundant
+test), unchanged behavior confirmed by the same suite passing before and
+after every consolidation step.
+
+**17.5 v0.1.0 release prep.** `connector/pyproject.toml` was already at
+`0.1.0` (never bumped past the version set when the package was first
+split out) - this is that version's actual release. Built and verified a
+clean wheel (`python -m build --wheel`), confirmed it contains only
+`pabel_connector`'s own modules (no `server/` code, no OpenABE, no
+Postgres/Keycloak) - genuinely installable with nothing but
+`pip install <wheel>`, no repo clone. Distribution path: a GitHub Release
+with this wheel as an attached asset, not a private package index (not
+warranted at this project's current scale) - see connector/README.md's
+"Distribution" section.

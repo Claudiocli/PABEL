@@ -30,6 +30,12 @@ Copilot CLI's own execution engine actually reads `windows` the same way
 VS Code's does (no independent source found naming it for this product
 specifically), but writing it is harmless either way and matches the
 documented "auto-converts VS Code's shape" behavior.
+
+Supports `--global`: writes its own file inside the confirmed `~/.copilot/
+hooks/` directory (see the paragraph above) - each `*.json` file there is
+independent, so unlike the other --global installers this needs no
+read-merge of shared content, just its own dedicated filename (already
+chosen to never collide with anything else in that directory).
 """
 
 from pathlib import Path
@@ -41,6 +47,7 @@ status = "unverified"
 HOOK_KEYS = ["copilot-cli"]
 
 CONFIG_RELATIVE_PATH = Path(".github") / "hooks" / "pabel-copilot-cli.json"
+GLOBAL_CONFIG_RELATIVE_PATH = Path(".copilot") / "hooks" / "pabel-copilot-cli.json"
 
 
 def required_env():
@@ -51,20 +58,15 @@ def config_path(base_dir: Path) -> Path:
     return base_dir / CONFIG_RELATIVE_PATH
 
 
-def install(base_dir: Path) -> str:
-    path = config_path(base_dir)
+def install(base_dir: Path, global_: bool = False) -> str:
+    path = base.global_config_path(GLOBAL_CONFIG_RELATIVE_PATH) if global_ else config_path(base_dir)
     data = base.read_json(path)
     data.setdefault("version", 1)
-    hooks = data.setdefault("hooks", {})
-    pre_tool_use = hooks.setdefault("preToolUse", [])
-    hooks["preToolUse"] = base.merge_hook_list(
-        pre_tool_use,
-        base.hook_command("copilot-cli"),
-        extra_fields={"windows": base.hook_command_windows("copilot-cli")},
-    )
+    base.install_windows_aware_hook(data, "preToolUse", "copilot-cli")
     base.write_json(path, data)
+    scope = " (global - applies to every project)" if global_ else ""
     return (
-        f"Wrote a preToolUse hook to {path}\n"
+        f"Wrote a preToolUse hook to {path}{scope}\n"
         f"(path confirmed against docs.github.com's Copilot CLI hooks guide; "
         f"whether this actually fires as expected in a live session is still unverified).\n"
         f"Known vendor limitation: additionalContext delivery for preToolUse is "

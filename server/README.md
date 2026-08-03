@@ -101,9 +101,9 @@ Prints a `client_id`/`client_secret` pair **once** - this is exclusively an
 admin action, never reachable over the network from an employee's own
 machine. Hand both values to that employee out of band (the same channel
 used for their own Keycloak credentials), for them to run
-`pabel-connector install claude-code --client-id ... --client-secret ...`
-(or `enroll.py` for the Claude Code plugin specifically - see
-`claude-plugin/pabel/README.md`). Revoke one specific installation without
+`pabel-connector install <agent> --client-id ... --client-secret ...` -
+the same command for every supported agent, Claude Code included, no
+special case. Revoke one specific installation without
 touching any other with `agents_admin.py revoke-installation CLIENT_ID`;
 `list-installations [AGENT_ID]` shows what's currently registered.
 

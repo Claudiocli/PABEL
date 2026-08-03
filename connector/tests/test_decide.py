@@ -48,6 +48,19 @@ def test_deny_hook_bypass_for_direct_internals_call(tmp_path, monkeypatch):
     assert decide(call, AGENT_ID).kind == DecisionKind.DENY_HOOK_BYPASS
 
 
+def test_allow_unmodified_for_direct_call_to_mcp_local_server():
+    """mcp_local_server.py's own bundled whoami/read_document/login tools
+    are always sanctioned and need no injected agent_token - they resolve
+    this installation's identity internally. Distinct from the deployed
+    server's own "pabel" tools tested below, which do need injection."""
+    call = NormalizedCall(
+        tool_name="mcp__pabel-connector__whoami", tool_input={},
+        mcp_target=("pabel-connector", "whoami"))
+    decision = decide(call, AGENT_ID)
+    assert decision.kind == DecisionKind.ALLOW
+    assert decision.updated_input is None
+
+
 def test_allow_with_injected_agent_token_for_direct_call_to_pabel_own_mcp_tool(monkeypatch):
     """Regression test for the self-conflict bug found during the
     multi-agent refactor: a direct, legitimate call to the pabel MCP
@@ -129,7 +142,7 @@ def test_deny_with_relay_on_successful_read(tmp_path, monkeypatch):
     target = tmp_path / "test.abe"
     target.write_text("ciphertext")
     fake_result = {"sections": ["ok"]}
-    monkeypatch.setattr(decide_module, "read_document",
+    monkeypatch.setattr(decide_module, "read_document_with_login",
                         lambda path, name, agent_id: fake_result)
 
     call = NormalizedCall(tool_name="Read", tool_input={"file_path": str(target)})
@@ -138,70 +151,23 @@ def test_deny_with_relay_on_successful_read(tmp_path, monkeypatch):
     assert decision.content == fake_result
 
 
-def test_deny_auth_error_when_not_logged_in_and_auto_login_also_fails(tmp_path, monkeypatch):
-    """Not logged in, and the automatic browser login this now triggers
-    (see decide.py's AuthError handling) itself fails/times out - denied,
-    citing the login failure specifically, not a bare "not logged in"."""
+def test_deny_auth_error_when_not_authenticated(tmp_path, monkeypatch):
+    # The retry-with-login mechanics themselves (including the "automatic
+    # browser login could not complete" / "logged in, but still not
+    # authenticated" distinction) are relay.read_document_with_login's own
+    # concern, tested in test_relay.py - decide() only needs to map
+    # whatever AuthError it raises onto DENY_AUTH_ERROR.
     target = tmp_path / "test.abe"
     target.write_text("ciphertext")
 
     def raise_auth_error(path, name, agent_id):
-        raise AuthError("not logged in")
+        raise AuthError("automatic browser login could not complete: timed out")
 
-    def raise_login_timeout():
-        raise AuthError("browser login timed out")
-
-    monkeypatch.setattr(decide_module, "read_document", raise_auth_error)
-    monkeypatch.setattr(decide_module.session, "login", raise_login_timeout)
+    monkeypatch.setattr(decide_module, "read_document_with_login", raise_auth_error)
     call = NormalizedCall(tool_name="Read", tool_input={"file_path": str(target)})
     decision = decide(call, AGENT_ID)
     assert decision.kind == DecisionKind.DENY_AUTH_ERROR
     assert "browser login could not complete" in decision.reason
-
-
-def test_auto_login_retries_and_relays_on_success(tmp_path, monkeypatch):
-    """The main new behavior: no valid session yet, but the automatic
-    browser login (triggered here rather than just denying and telling a
-    human to run a separate CLI command - see decide.py) succeeds, so the
-    retried read_document call goes through and its result is relayed
-    normally, in the same hook invocation, no second attempt needed."""
-    target = tmp_path / "test.abe"
-    target.write_text("ciphertext")
-    fake_result = {"sections": ["ok"]}
-    calls = {"n": 0}
-
-    def read_document_fails_once_then_succeeds(path, name, agent_id):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise AuthError("not logged in")
-        return fake_result
-
-    monkeypatch.setattr(decide_module, "read_document", read_document_fails_once_then_succeeds)
-    monkeypatch.setattr(decide_module.session, "login", lambda: None)
-    call = NormalizedCall(tool_name="Read", tool_input={"file_path": str(target)})
-    decision = decide(call, AGENT_ID)
-    assert decision.kind == DecisionKind.DENY_WITH_RELAY
-    assert decision.content == fake_result
-    assert calls["n"] == 2
-
-
-def test_auto_login_succeeds_but_still_not_authenticated(tmp_path, monkeypatch):
-    """Login itself completes, but the retried read_document call still
-    raises AuthError (e.g. the human logged in but still lacks the
-    required role) - surfaced as its own distinct reason, not retried
-    again forever."""
-    target = tmp_path / "test.abe"
-    target.write_text("ciphertext")
-
-    def always_raise_auth_error(path, name, agent_id):
-        raise AuthError("still not authorized")
-
-    monkeypatch.setattr(decide_module, "read_document", always_raise_auth_error)
-    monkeypatch.setattr(decide_module.session, "login", lambda: None)
-    call = NormalizedCall(tool_name="Read", tool_input={"file_path": str(target)})
-    decision = decide(call, AGENT_ID)
-    assert decision.kind == DecisionKind.DENY_AUTH_ERROR
-    assert "Logged in, but still not authenticated" in decision.reason
 
 
 def test_deny_relay_error_when_server_unreachable(tmp_path, monkeypatch):
@@ -211,6 +177,6 @@ def test_deny_relay_error_when_server_unreachable(tmp_path, monkeypatch):
     def raise_relay_error(path, name, agent_id):
         raise RelayError("connection refused")
 
-    monkeypatch.setattr(decide_module, "read_document", raise_relay_error)
+    monkeypatch.setattr(decide_module, "read_document_with_login", raise_relay_error)
     call = NormalizedCall(tool_name="Read", tool_input={"file_path": str(target)})
     assert decide(call, AGENT_ID).kind == DecisionKind.DENY_RELAY_ERROR

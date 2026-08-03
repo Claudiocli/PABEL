@@ -1,12 +1,12 @@
 """Detection logic: does a tool call touch an .abe file or the documents/
 folder, and if so, can exactly one concrete file be identified for relay?
 
-The regex set and the spaced-path/QUOTED_SEGMENT handling below are a
-direct port of claude-plugin/pabel/hooks/pabel_relay_hook.py (see
-docs/phase2-engineering-notes.md sec 9 for the bugs already found and
-fixed there) - nothing here was ever Claude-Code-specific, since it only
-ever operates on the serialized tool_input, never on a Claude-only field
-name, so the port is unchanged.
+The regex set and the spaced-path/QUOTED_SEGMENT handling below were
+originally ported from the standalone Claude Code plugin's own hook script
+(since removed - see docs/phase2-engineering-notes.md sec 9 for the bugs
+already found and fixed there) - nothing here was ever Claude-Code-
+specific, since it only ever operates on the serialized tool_input, never
+on a Claude-only field name, so the port carried over unchanged.
 """
 
 import json
@@ -27,6 +27,14 @@ QUOTED_SEGMENT = re.compile(r'"([^"]*)"|\'([^\']*)\'')
 # to end in ".abe" would match ENCRYPTED_FILE and could be wrongly denied
 # as ambiguous - decide() checks this before calling mentions_target at all.
 PABEL_MCP_SERVER_NAME = "pabel"
+
+# mcp_local_server.py - this package's own bundled local MCP server,
+# registered per-agent by installers/base.py's mcp_server_command() - is a
+# second, distinct always-sanctioned target. Its whoami/read_document/login
+# tools resolve this installation's own identity internally (baked in at
+# registration time), so unlike PABEL_MCP_SERVER_NAME above, no agent_token
+# needs injecting - see decide.py's two separate mcp_target branches.
+PABEL_CONNECTOR_MCP_SERVER_NAME = "pabel-connector"
 
 
 def mentions_target(tool_input):

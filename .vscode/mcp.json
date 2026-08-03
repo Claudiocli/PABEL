@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "pabel-connector": {
+      "type": "stdio",
+      "command": "C:\\Users\\claudiol\\OneDrive - NTT DATA EMEAL\\Desktop\\Projects\\PABEL\\server\\.venv\\Scripts\\python.exe",
+      "args": [
+        "-m",
+        "pabel_connector.mcp_local_server",
+        "vscode"
+      ]
+    }
+  }
+}

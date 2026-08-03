@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "pabel": {
-      "type": "http",
-      "url": "${PABEL_SERVER_URL}"
-    }
-  }
-}

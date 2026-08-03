@@ -56,6 +56,7 @@ today, unconfirmed whether Cascade on Windows honors that alone.
 import json
 
 from ..core.types import Decision, DecisionKind, NormalizedCall, RenderedResponse
+from .base import fold_content_into_reason
 
 PABEL_MCP_SERVER_NAME = "pabel"
 
@@ -75,10 +76,7 @@ def _render(decision: Decision) -> RenderedResponse:
     if decision.kind == DecisionKind.ALLOW:
         return RenderedResponse(exit_code=0)
 
-    reason = decision.reason
-    if decision.content is not None:
-        reason = f"{reason}\n\nread_document result:\n{json.dumps(decision.content)}"
-    return RenderedResponse(exit_code=2, stderr=reason)
+    return RenderedResponse(exit_code=2, stderr=fold_content_into_reason(decision))
 
 
 class _WindsurfHook:

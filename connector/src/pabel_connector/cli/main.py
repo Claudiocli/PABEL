@@ -33,8 +33,13 @@ STATUS_LABELS = {
 
 def cmd_list(_args) -> int:
     for key, installer in sorted(INSTALLERS.items()):
-        print(f"{key:15s} {STATUS_LABELS.get(installer.status, installer.status)}")
+        global_note = " [supports --global]" if _supports_global(installer) else ""
+        print(f"{key:15s} {STATUS_LABELS.get(installer.status, installer.status)}{global_note}")
     return 0
+
+
+def _supports_global(installer) -> bool:
+    return hasattr(installer, "GLOBAL_CONFIG_RELATIVE_PATH")
 
 
 def cmd_install(args) -> int:
@@ -43,8 +48,16 @@ def cmd_install(args) -> int:
         sys.stderr.write(f"pabel-connector: unknown agent {args.agent!r}. "
                           f"See `pabel-connector list`.\n")
         return 2
+    if args.global_ and not _supports_global(installer):
+        sys.stderr.write(
+            f"pabel-connector: {args.agent!r} has no confirmed global/user-level hook "
+            f"location - install per-project with --dir instead of --global. See "
+            f"connector/docs/coverage-matrix.md for why (not guessed, so not offered "
+            f"here rather than risk writing to a path nothing reads).\n")
+        return 2
     base_dir = Path(args.dir).resolve()
-    print(installer.install(base_dir))
+    print(installer.install(base_dir, global_=args.global_) if args.global_
+          else installer.install(base_dir))
     env_needed = base.SHARED_ENV_VARS + installer.required_env()
     print("\nEnv vars needed (ask your admin for the deployed values):")
     for var in env_needed:
@@ -80,8 +93,12 @@ def cmd_uninstall(args) -> int:
         print(f"Nothing to uninstall for {args.agent!r} - see `pabel-connector install "
               f"{args.agent}` for what this agent actually needs.")
         return 0
-    base_dir = Path(args.dir).resolve()
-    path = installer.config_path(base_dir)
+    if args.global_ and not _supports_global(installer):
+        sys.stderr.write(f"pabel-connector: {args.agent!r} has no confirmed global/user-level "
+                          f"hook location - nothing to uninstall with --global.\n")
+        return 2
+    path = (base.global_config_path(installer.GLOBAL_CONFIG_RELATIVE_PATH) if args.global_
+            else installer.config_path(Path(args.dir).resolve()))
     data = base.read_json(path)
     commands = {base.hook_command(k) for k in installer.HOOK_KEYS}
     if base.remove_matching_commands(data, commands):
@@ -116,8 +133,8 @@ def _hook_wiring_ok(agent_id: str, base_dir: Path) -> "str | None":
     all (exactly what happened with vscode - install was never run in this
     project directory) with nothing else ever surfacing that; doctor is
     where it should be loud instead of silent. Returns a one-line problem
-    description otherwise; installers with no config file at all (Claude
-    Code - it defers to its own plugin) are skipped, not flagged."""
+    description otherwise; installers with no config file at all (the
+    documented-gap agents - cline, continue-dev) are skipped, not flagged."""
     installer = INSTALLERS.get(agent_id)
     if installer is None:
         return f"no installer registered for {agent_id!r} - can't check its hook wiring"
@@ -189,6 +206,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_install = sub.add_parser("install", help="wire the PABEL relay hook into an agent")
     p_install.add_argument("agent", help="agent key, see `pabel-connector list`")
     p_install.add_argument("--dir", default=".", help="project directory to install into (default: cwd)")
+    p_install.add_argument("--global", dest="global_", action="store_true",
+                           help="install to this agent's user-level/global config instead of "
+                                "--dir, applying to every project - only offered for agents with "
+                                "a confirmed global location (see `pabel-connector list` and "
+                                "connector/docs/coverage-matrix.md); rejected otherwise rather "
+                                "than guessing a path")
     p_install.add_argument("--client-id", default=None,
                            help="this installation's Keycloak client_id (from your admin) - prompted if omitted")
     p_install.add_argument("--client-secret", default=None,
@@ -199,6 +222,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_uninstall = sub.add_parser("uninstall", help="remove the PABEL relay hook from an agent")
     p_uninstall.add_argument("agent", help="agent key, see `pabel-connector list`")
     p_uninstall.add_argument("--dir", default=".", help="project directory to uninstall from (default: cwd)")
+    p_uninstall.add_argument("--global", dest="global_", action="store_true",
+                             help="uninstall from this agent's user-level/global config instead of --dir")
     p_uninstall.set_defaults(func=cmd_uninstall)
 
     p_login = sub.add_parser("login", help="log in to PABEL via the system browser")

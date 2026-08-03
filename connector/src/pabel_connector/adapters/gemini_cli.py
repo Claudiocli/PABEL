@@ -22,6 +22,7 @@ import json
 import re
 
 from ..core.types import Decision, DecisionKind, NormalizedCall, RenderedResponse
+from .base import fold_content_into_reason
 
 name = "gemini-cli"
 
@@ -55,8 +56,5 @@ def render(decision: Decision) -> RenderedResponse:
     if decision.kind == DecisionKind.ALLOW:
         return RenderedResponse()
 
-    reason = decision.reason
-    if decision.content is not None:
-        reason = f"{reason}\n\nread_document result:\n{json.dumps(decision.content)}"
-
+    reason = fold_content_into_reason(decision)
     return RenderedResponse(stdout=json.dumps({"decision": "deny", "reason": reason}))

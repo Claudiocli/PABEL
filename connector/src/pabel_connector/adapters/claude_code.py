@@ -1,8 +1,9 @@
 """Claude Code's PreToolUse hook adapter.
 
-STATUS: VERIFIED. This is a behavior-identical port of the hook already
-shipped and manually tested end-to-end in
-claude-plugin/pabel/hooks/pabel_relay_hook.py (see
+STATUS: VERIFIED. This is a behavior-identical port of the hook originally
+prototyped and manually tested end-to-end in a standalone Claude Code
+plugin (since removed in favor of installing Claude Code the same way as
+every other agent - see installers/claude_code.py; see
 docs/phase2-engineering-notes.md sec 9 for the verification history: real
 reads/writes/greps/globs/bash-cat against a real deployed server,
 including the two bugs found and fixed - spaced paths and the

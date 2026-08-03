@@ -1,6 +1,9 @@
-"""This dev repo's own PreToolUse hook - dispatches into the agent-agnostic
-`pabel-connector` package (PABEL/connector/), exactly like
-claude-plugin/pabel/hooks/pabel_relay_hook.py does for a real install.
+"""This dev repo's own PreToolUse hook - a thin dispatcher into the
+agent-agnostic `pabel-connector` package (PABEL/connector/), the same
+`pabel_connector.hook` module `installers/claude_code.py` now wires up for
+every real install via `pabel-connector install claude-code --dir .`; this
+file predates that installer and hasn't been migrated to it yet, though
+the logic it dispatches to is identical either way.
 
 Superseded `block_abe_direct_read.py` (which only ever blocked a direct
 `oabe_*` CLI invocation via Bash - Read/Grep/Bash-cat on an .abe file went

@@ -12,6 +12,18 @@ per-hook input field names this also confirmed
 (tool_info.command_line, tool_info.mcp_server_name/mcp_tool_name/
 mcp_tool_arguments - all different from what earlier, unconfirmed
 versions of that file guessed).
+
+Supports `--global`: confirmed 2026-08 via docs.devin.ai/desktop/cascade/
+hooks (the current redirect target of docs.windsurf.com/windsurf/cascade/
+hooks) - unlike Cursor/Gemini CLI/Claude Code, the user-level path is NOT
+just this same relative path rooted at $HOME; it's `~/.codeium/windsurf/
+hooks.json`, documented as applying across all platforms with no Windows-
+specific variation. Windsurf also documents a third, system-level tier
+(`C:\\ProgramData\\Windsurf\\hooks.json` on Windows) this package has no
+reason to write to (an org-wide admin policy, not a per-employee install);
+system/user/workspace hooks are documented to merge and each fire
+independently, so writing only the user-level file here is enough for
+--global coverage.
 """
 
 from pathlib import Path
@@ -22,6 +34,7 @@ name = "windsurf"
 status = "degraded"
 
 CONFIG_RELATIVE_PATH = Path(".windsurf") / "hooks.json"
+GLOBAL_CONFIG_RELATIVE_PATH = Path(".codeium") / "windsurf" / "hooks.json"
 HOOK_POINTS = ("pre_read_code", "pre_write_code", "pre_run_command", "pre_mcp_tool_use")
 HOOK_KEYS = [f"windsurf:{point}" for point in HOOK_POINTS]
 
@@ -34,15 +47,14 @@ def config_path(base_dir: Path) -> Path:
     return base_dir / CONFIG_RELATIVE_PATH
 
 
-def install(base_dir: Path) -> str:
-    path = config_path(base_dir)
+def install(base_dir: Path, global_: bool = False) -> str:
+    path = base.global_config_path(GLOBAL_CONFIG_RELATIVE_PATH) if global_ else config_path(base_dir)
     data = base.read_json(path)
-    hooks = data.setdefault("hooks", {})
-    for point in HOOK_POINTS:
-        hooks[point] = base.merge_hook_list(hooks.get(point), base.hook_command(f"windsurf:{point}"))
+    base.install_multi_point_hooks(data, "windsurf", HOOK_POINTS)
     base.write_json(path, data)
+    scope = " (global - applies to every project)" if global_ else ""
     return (
         f"Wrote pre_read_code/pre_write_code/pre_run_command/pre_mcp_tool_use hooks "
-        f"to {path}\n(UNVERIFIED whether Windsurf surfaces the relayed "
+        f"to {path}{scope}\n(UNVERIFIED whether Windsurf surfaces the relayed "
         f"content back to the model at all - see adapters/windsurf.py)."
     )

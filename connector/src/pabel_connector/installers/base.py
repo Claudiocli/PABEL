@@ -50,13 +50,28 @@ override that, only ask for enough room."""
 
 
 class Installer(Protocol):
+    """Not every attribute/method here is present on every installer - this
+    documents the common shape, not an enforced interface (nothing in this
+    package actually type-checks against it):
+      - The three documented-gap installers (cline, continue_dev,
+        codex_cli) have no `config_path`/`HOOK_KEYS`/`GLOBAL_CONFIG_
+        RELATIVE_PATH` at all - `install()` just explains why and writes
+        nothing (see cli/main.py's `hasattr(installer, "config_path")`
+        checks).
+      - `GLOBAL_CONFIG_RELATIVE_PATH` only exists on installers with a
+        confirmed user-level location (see global_config_path()'s
+        docstring) - `install()`'s `global_` parameter is meaningless
+        without it.
+    """
     name: str
     status: str  # "verified" | "unverified" | "degraded" | "gap"
 
-    def install(self, base_dir: Path) -> str:
+    def install(self, base_dir: Path, global_: bool = False) -> str:
         """Read-merge-write this agent's own hook-config file so it invokes
         pabel-connector-hook. Returns a human-readable summary of what was
-        written and what the user still needs to do (env vars, login)."""
+        written and what the user still needs to do (env vars, login).
+        `global_` writes to GLOBAL_CONFIG_RELATIVE_PATH instead of
+        `base_dir` where supported - see cli/main.py's `_supports_global()`."""
         ...
 
     def required_env(self) -> List[str]:
@@ -75,6 +90,19 @@ def hook_command(key: str) -> str:
     return f'"{sys.executable}" -m pabel_connector.hook {key}'
 
 
+def mcp_server_command(agent_id: str) -> List[str]:
+    """The argv (command + args) for registering mcp_local_server.py as a
+    stdio MCP server under this installation's own agent_id - the same
+    interpreter pabel-connector was installed into, same reasoning as
+    hook_command() above. Returned as a list (not a shell string like
+    hook_command()) because every confirmed MCP-registration schema this
+    package targets (Claude Code's/Cursor's mcpServers, VS Code's servers)
+    takes "command"/"args" as separate JSON fields, spawned directly with
+    no shell involved - so, unlike hooks, there's no PowerShell
+    call-operator quoting problem to work around here at all."""
+    return [sys.executable, "-m", "pabel_connector.mcp_local_server", agent_id]
+
+
 def hook_command_windows(key: str) -> str:
     """Same invocation as `hook_command`, prefixed with PowerShell's call
     operator `&` - confirmed necessary 2026-08 via a real, live VS Code
@@ -90,6 +118,23 @@ def hook_command_windows(key: str) -> str:
     prefix, which is why this is a separate Windows-only override rather
     than a change to `hook_command` itself."""
     return f"& {hook_command(key)}"
+
+
+def global_config_path(relative_path: Path) -> Path:
+    """Home-relative equivalent of a workspace CONFIG_RELATIVE_PATH, for
+    installers whose confirmed global/user-level hook location is simply
+    "the same relative path, rooted at the user's home directory instead
+    of a project" (Claude Code's `~/.claude/settings.json`, Cursor's
+    `~/.cursor/hooks.json`, Gemini CLI's `~/.gemini/settings.json` - all
+    confirmed 2026-08 against real vendor docs, not guessed). Installers
+    whose global location has a genuinely different shape (Windsurf's
+    `~/.codeium/windsurf/hooks.json`, Copilot CLI's `~/.copilot/hooks/`
+    directory) compute their own path instead of using this helper;
+    installers with no confirmed global location at all (VS Code - no
+    user-level file found for its native agent hooks, only workspace
+    `.github/hooks/*.json`) have no GLOBAL_CONFIG_RELATIVE_PATH and don't
+    support `--global` - see docs/coverage-matrix.md."""
+    return Path.home() / relative_path
 
 
 def read_json(path: Path) -> dict:
@@ -124,6 +169,32 @@ def remove_matching_commands(node, commands) -> bool:
             if remove_matching_commands(item, commands):
                 removed = True
     return removed
+
+
+def install_windows_aware_hook(data: dict, event_key: str, agent_key: str) -> None:
+    """Shared install() body for single-hook-point agents whose Windows
+    execution needs the PowerShell call-operator override (vscode,
+    copilot-cli - both go through the same `.github/hooks/*.json`
+    convention and execution path). Mutates `data["hooks"][event_key]` in
+    place; the caller still owns reading/writing the file and any
+    agent-specific top-level keys (e.g. copilot-cli's own "version": 1)."""
+    hooks = data.setdefault("hooks", {})
+    hooks[event_key] = merge_hook_list(
+        hooks.get(event_key), hook_command(agent_key),
+        extra_fields={"windows": hook_command_windows(agent_key)})
+
+
+def install_multi_point_hooks(data: dict, agent_key: str, hook_points) -> None:
+    """Shared install() body for multi-hook-point agents (Cursor, Windsurf):
+    each hook point gets its own merge_hook_list() call keyed
+    "<agent_key>:<point>", matching registry.py's/hook.py's convention for
+    resolving which agent_id a multi-point key belongs to. Mutates
+    `data["hooks"]` in place; the caller still owns reading/writing the
+    file and any agent-specific top-level keys (e.g. Cursor's own
+    "version": 1)."""
+    hooks = data.setdefault("hooks", {})
+    for point in hook_points:
+        hooks[point] = merge_hook_list(hooks.get(point), hook_command(f"{agent_key}:{point}"))
 
 
 def merge_hook_list(existing: list, command: str, extra_fields: dict = None) -> list:

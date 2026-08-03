@@ -33,6 +33,25 @@ string as a standalone expression and rejects anything after it
 (`Unexpected token '-m' in expression or statement.`), confirmed against a
 real failing hook invocation. Fixed by also writing a `windows` field via
 `base.hook_command_windows()`, which prefixes `&`.
+
+Also registers mcp_local_server.py as a direct MCP server in
+`.vscode/mcp.json` (confirmed schema: `{"servers": {"<name>": {"type":
+"stdio", "command", "args"}}}`, code.visualstudio.com/docs/agent-
+customization/mcp-servers) - whoami/read_document/login become directly
+callable tools, not just something the hook relays reactively.
+
+**No `--global` support** (unlike claude-code/cursor/gemini-cli/windsurf/
+copilot-cli): a 2026-08 doc search found no confirmed user-profile-level
+file for VS Code's *native agent hooks* specifically - only the
+workspace-scoped `.github/hooks/*.json` above. VS Code's "Agent Plugins"
+feature does support enabling/disabling a plugin globally vs. per-
+workspace, but that's a UI toggle over internal settings storage, not a
+raw JSON file this package could write to the way every other agent's
+global location is a plain file. This installer therefore has no
+GLOBAL_CONFIG_RELATIVE_PATH at all - `cli/main.py` rejects `--global` for
+`vscode` with a clear error rather than silently guessing a path, which is
+exactly the mistake (`.vscode/hooks.json`) this whole module already had
+to recover from once.
 """
 
 from pathlib import Path
@@ -43,6 +62,7 @@ name = "vscode"
 status = "unverified"
 
 CONFIG_RELATIVE_PATH = Path(".github") / "hooks" / "pabel.json"
+MCP_CONFIG_RELATIVE_PATH = Path(".vscode") / "mcp.json"
 HOOK_KEYS = ["vscode"]
 
 
@@ -57,15 +77,19 @@ def config_path(base_dir: Path) -> Path:
 def install(base_dir: Path) -> str:
     path = config_path(base_dir)
     data = base.read_json(path)
-    hooks = data.setdefault("hooks", {})
-    hooks["PreToolUse"] = base.merge_hook_list(
-        hooks.get("PreToolUse"),
-        base.hook_command("vscode"),
-        extra_fields={"windows": base.hook_command_windows("vscode")},
-    )
+    base.install_windows_aware_hook(data, "PreToolUse", "vscode")
     base.write_json(path, data)
+
+    mcp_path = base_dir / MCP_CONFIG_RELATIVE_PATH
+    mcp_data = base.read_json(mcp_path)
+    servers = mcp_data.setdefault("servers", {})
+    command, *args = base.mcp_server_command(name)
+    servers["pabel-connector"] = {"type": "stdio", "command": command, "args": args}
+    base.write_json(mcp_path, mcp_data)
+
     return (
         f"Wrote a catch-all PreToolUse hook to {path}\n"
         f"(path/schema confirmed against code.visualstudio.com/docs/agent-customization/hooks; "
-        f"whether this actually fires as expected in a live Copilot session is still unverified)."
+        f"whether this actually fires as expected in a live Copilot session is still unverified).\n"
+        f"Registered mcp_local_server.py's whoami/read_document/login tools in {mcp_path}."
     )

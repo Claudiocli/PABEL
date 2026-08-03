@@ -18,8 +18,7 @@ every design decision, bug found, and its fix - see
 | Path | What it is |
 |---|---|
 | `server/` | The MCP server itself: CP-ABE via OpenABE, Keycloak auth (MFA-capable browser login only), PostgreSQL agent/key registry, audit log. |
-| `claude-plugin/` | The Claude Code plugin - **verified working end-to-end**, ready to install. |
-| `connector/` | `pabel-connector` - the agent-agnostic core (Strategy pattern) plus adapters extending the same enforcement to other AI coding agents (Cursor, Windsurf, VS Code, GitHub Copilot CLI, Gemini CLI, a partial fit for OpenAI Codex CLI). |
+| `connector/` | `pabel-connector` - the agent-agnostic core (Strategy pattern) plus adapters for every supported AI coding agent, Claude Code included - **verified working end-to-end**, no agent gets a separate or privileged install path. |
 | `documents/` | `Test.abe`, a demo encrypted fixture used throughout testing. |
 | `docs/` | The original use-case writeup and the full engineering log. |
 

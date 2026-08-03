@@ -77,6 +77,17 @@ def test_vscode_install_is_idempotent(tmp_path):
     assert len(data["hooks"]["PreToolUse"]) == 1
 
 
+def test_vscode_install_registers_mcp_local_server(tmp_path):
+    # whoami/read_document/login become directly callable tools, not just
+    # something the hook relays reactively - confirmed schema:
+    # code.visualstudio.com/docs/agent-customization/mcp-servers.
+    INSTALLERS["vscode"].install(tmp_path)
+    data = json.loads((tmp_path / ".vscode" / "mcp.json").read_text())
+    server = data["servers"]["pabel-connector"]
+    assert server["type"] == "stdio"
+    assert server["args"][-2:] == ["pabel_connector.mcp_local_server", "vscode"]
+
+
 def test_copilot_cli_install_writes_windows_override(tmp_path):
     # Same .github/hooks/*.json execution path as vscode, so it inherits
     # the same PowerShell call-operator requirement on Windows - see
@@ -144,10 +155,34 @@ def test_codex_cli_is_a_documented_gap_not_an_installer(tmp_path):
     assert not (tmp_path / ".codex").exists()
 
 
-def test_claude_code_installer_prints_plugin_instructions_and_writes_nothing(tmp_path):
-    summary = INSTALLERS["claude-code"].install(tmp_path)
-    assert "/plugin install pabel" in summary
-    assert list(tmp_path.iterdir()) == []
+def test_claude_code_install_writes_nested_pretooluse_hook(tmp_path):
+    # Claude Code gets no privileged installation path - the exact same
+    # `pabel-connector install claude-code --dir .` every other agent uses,
+    # writing .claude/settings.json directly (nested {"hooks": [...]} shape,
+    # confirmed live in this repo's own working config - see
+    # installers/claude_code.py's docstring).
+    INSTALLERS["claude-code"].install(tmp_path)
+    data = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    block = data["hooks"]["PreToolUse"][0]
+    entry = block["hooks"][0]
+    assert "pabel_connector.hook claude-code" in entry["command"]
+    assert entry["timeout"] == base.HOOK_TIMEOUT_SECONDS
+    assert "windows" not in entry  # proven unnecessary by this repo's own working config
+
+
+def test_claude_code_install_is_idempotent(tmp_path):
+    INSTALLERS["claude-code"].install(tmp_path)
+    INSTALLERS["claude-code"].install(tmp_path)
+    data = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    assert len(data["hooks"]["PreToolUse"]) == 1
+
+
+def test_claude_code_install_registers_both_mcp_servers(tmp_path):
+    INSTALLERS["claude-code"].install(tmp_path)
+    data = json.loads((tmp_path / ".mcp.json").read_text())
+    assert data["mcpServers"]["pabel"] == {"type": "http", "url": "${PABEL_SERVER_URL}"}
+    assert data["mcpServers"]["pabel-connector"]["args"][-2:] == \
+        ["pabel_connector.mcp_local_server", "claude-code"]
 
 
 def test_gap_installers_do_not_crash_and_write_nothing(tmp_path):
@@ -155,3 +190,48 @@ def test_gap_installers_do_not_crash_and_write_nothing(tmp_path):
         summary = INSTALLERS[key].install(tmp_path)
         assert "known-gaps.md" in summary
         assert list(tmp_path.iterdir()) == []
+
+
+# --global: only offered where a real vendor doc confirmed a user-level
+# location (2026-08) - vscode has none confirmed and must not silently
+# guess one, exactly the mistake its workspace path already made once.
+
+def test_global_supported_agents_match_confirmed_docs():
+    supported = {key for key, installer in INSTALLERS.items()
+                if hasattr(installer, "GLOBAL_CONFIG_RELATIVE_PATH")}
+    assert supported == {"claude-code", "cursor", "gemini-cli", "windsurf", "copilot-cli"}
+    assert "vscode" not in supported
+
+
+def test_claude_code_global_install_writes_to_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    INSTALLERS["claude-code"].install(tmp_path / "some-project", global_=True)
+    assert (tmp_path / ".claude" / "settings.json").exists()
+
+
+def test_cursor_global_install_writes_to_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    INSTALLERS["cursor"].install(tmp_path / "some-project", global_=True)
+    assert (tmp_path / ".cursor" / "hooks.json").exists()
+
+
+def test_gemini_cli_global_install_writes_to_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    INSTALLERS["gemini-cli"].install(tmp_path / "some-project", global_=True)
+    assert (tmp_path / ".gemini" / "settings.json").exists()
+
+
+def test_windsurf_global_install_uses_codeium_path_not_dot_windsurf(tmp_path, monkeypatch):
+    # Windsurf's confirmed global path is ~/.codeium/windsurf/hooks.json,
+    # NOT ~/.windsurf/hooks.json - a genuinely different relative shape
+    # from its workspace path, unlike cursor/gemini-cli/claude-code.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    INSTALLERS["windsurf"].install(tmp_path / "some-project", global_=True)
+    assert (tmp_path / ".codeium" / "windsurf" / "hooks.json").exists()
+    assert not (tmp_path / ".windsurf").exists()
+
+
+def test_copilot_cli_global_install_writes_to_hooks_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    INSTALLERS["copilot-cli"].install(tmp_path / "some-project", global_=True)
+    assert (tmp_path / ".copilot" / "hooks" / "pabel-copilot-cli.json").exists()

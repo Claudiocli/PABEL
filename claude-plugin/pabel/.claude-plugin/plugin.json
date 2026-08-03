@@ -1,7 +1,0 @@
-{
-  "name": "pabel",
-  "description": "Access PABEL CP-ABE-encrypted documents through the deployed PABEL MCP server. Blocks every direct interaction with .abe files (any tool) and transparently relays them to the server instead, which decrypts only the sections both the human's and this agent's attributes together satisfy.",
-  "version": "0.1.0",
-  "author": { "name": "Claudio Lucisano" },
-  "homepage": "https://github.com/Claudiocli/openabe"
-}

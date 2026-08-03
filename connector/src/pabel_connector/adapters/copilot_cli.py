@@ -26,6 +26,7 @@ import json
 import re
 
 from ..core.types import Decision, DecisionKind, NormalizedCall, RenderedResponse
+from .base import fold_content_into_reason
 
 name = "copilot-cli"
 
@@ -58,12 +59,9 @@ def render(decision: Decision) -> RenderedResponse:
     if decision.kind == DecisionKind.ALLOW:
         return RenderedResponse()
 
-    reason = decision.reason
-    if decision.content is not None:
-        # The guaranteed channel: fold the relay result into the reason
-        # text itself, since additionalContext delivery is unreliable here.
-        reason = f"{reason}\n\nread_document result:\n{json.dumps(decision.content)}"
-
+    # The guaranteed channel: fold the relay result into the reason text
+    # itself, since additionalContext delivery is unreliable here.
+    reason = fold_content_into_reason(decision)
     output = {
         "hookSpecificOutput": {
             "hookEventName": "preToolUse",
