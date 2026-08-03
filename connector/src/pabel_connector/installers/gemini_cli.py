@@ -43,7 +43,8 @@ def install(base_dir: Path) -> str:
     else:
         before_tool.append({
             "matcher": "*",
-            "hooks": [{"name": "pabel", "type": "command", "command": command}],
+            "hooks": [{"name": "pabel", "type": "command", "command": command,
+                       "timeout": base.HOOK_TIMEOUT_SECONDS}],
         })
 
     base.write_json(path, data)

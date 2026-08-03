@@ -66,10 +66,16 @@ services:
       # container) - Docker's port mapping can't reach that from outside,
       #  so this must be 0.0.0.0 for a container specifically.
       FASTMCP_HOST: 0.0.0.0
+      # Without this, core.py's AUDIT_LOG defaults to /app/audit.jsonl -
+      # inside this container's own throwaway filesystem, invisible from
+      # the host and gone on the next `compose up`. ./state below is the
+      # host directory that path actually lands in.
+      PABEL_AUDIT_LOG_PATH: /app/state/audit.jsonl
     ports:
       - "8001:8000"
     volumes:
       - ./authority:/app/authority
+      - ./state:/app/state
       - ../documents:/documents
     depends_on:
       - keycloak

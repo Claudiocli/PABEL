@@ -69,7 +69,13 @@ kc = KeycloakAuth()
 
 SERVICE_DIR = Path(__file__).resolve().parent
 SESSION_FILE = SERVICE_DIR / ".session.json"
-AUDIT_LOG = SERVICE_DIR / "audit.jsonl"
+# Overridable because the containerized deployment (compose.yml) runs this
+# file from /app, a path with nothing mounted back to the host by default -
+# writes there would go to the container's own throwaway filesystem and
+# vanish on the next `compose up`. compose.yml mounts a host directory and
+# points this at a file inside it; every non-container run (stdio, dev
+# scripts, tests) keeps today's behavior, a file next to this one.
+AUDIT_LOG = Path(os.environ.get("PABEL_AUDIT_LOG_PATH", str(SERVICE_DIR / "audit.jsonl")))
 
 
 def audit(client, operation, username=None, agent_id=None, auth_source=None,

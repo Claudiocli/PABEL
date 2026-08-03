@@ -1,13 +1,17 @@
 """Windsurf/Cascade hooks - four pre-hooks in one `.windsurf/hooks.json`
-(workspace-level; Windsurf is documented as only loading workspace-level
-hooks from this exact path, per connector/docs/coverage-matrix.md).
+(workspace-level, CONFIRMED - docs.windsurf.com/windsurf/cascade/hooks).
 
-STATUS: UNVERIFIED - the config *location* is reasonably well documented,
-but the exact per-hook input schema and, critically, whether Windsurf
-delivers the relay's decrypted content (folded into stderr by
-adapters/windsurf.py) back into the model's own context at all, versus
-only into a human-visible log, is NOT confirmed. This is the least-trusted
-adapter in this package - verify first.
+STATUS: DEGRADED, not just UNVERIFIED - a 2026-08 doc re-check confirmed
+Windsurf's pre-hooks block *only* via exit code 2 + stderr, with stderr
+documented as reaching a human-visible log in the Cascade UI, never the
+model's own context. There is no way for this adapter to transparently
+relay decrypted content back to the *model* here - a real vendor ceiling
+a future live test cannot lift, the same category as codex_cli's
+Bash-only coverage. See adapters/windsurf.py for the full finding and the
+per-hook input field names this also confirmed
+(tool_info.command_line, tool_info.mcp_server_name/mcp_tool_name/
+mcp_tool_arguments - all different from what earlier, unconfirmed
+versions of that file guessed).
 """
 
 from pathlib import Path
@@ -15,7 +19,7 @@ from pathlib import Path
 from . import base
 
 name = "windsurf"
-status = "unverified"
+status = "degraded"
 
 CONFIG_RELATIVE_PATH = Path(".windsurf") / "hooks.json"
 HOOK_POINTS = ("pre_read_code", "pre_write_code", "pre_run_command", "pre_mcp_tool_use")

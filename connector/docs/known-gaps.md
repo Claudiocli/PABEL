@@ -1,8 +1,36 @@
 # Known gaps
 
-Two agents have no enforcement adapter in this package at all, by design -
-not oversights. `pabel-connector install <name>` for either prints this
-same explanation rather than silently no-op-ing or erroring confusingly.
+Three agents have no enforcement adapter in this package at all, by design -
+not oversights. `pabel-connector install <name>` for any of them prints
+this same explanation rather than silently no-op-ing or erroring
+confusingly.
+
+## OpenAI Codex CLI
+
+Shipped as DEGRADED (Bash-only coverage) until a 2026-08 doc/issue-tracker
+re-check - prompted by finding installers/vscode.py's own path guess was
+simply wrong, which led to re-verifying every adapter in this package
+rather than trusting the original research unverified - found a fact the
+first pass missed: **Codex CLI's hooks feature is explicitly documented as
+"experimental (disabled by default, not available on Windows)."** Not a
+partial limitation like its Bash-only coverage - a platform this feature
+does not run on at all.
+
+This is the exact same blocking criterion already applied to Cline below:
+employee machines can't be assumed non-Windows (this project's own dev
+machine is Windows), so a hook surface unavailable there isn't a workable
+adapter, regardless of how good its coverage would be on the platforms
+where it does load (and even there, it would only ever cover the Bash
+tool - Read/Write/Edit/Apply Patch/web fetch/MCP calls never reach a hook
+at all per Codex's own docs).
+
+**Revisit when**: Codex CLI ships Windows support for hooks - at which
+point its Bash-only coverage gap (see the removed adapter's history in
+`docs/phase2-engineering-notes.md`) would still apply and it would ship as
+DEGRADED, not full coverage. Until then, Codex CLI can still be pointed at
+the deployed PABEL MCP server directly (`whoami`/`read_document` become
+normal callable tools, same as any MCP client) - there is just no
+enforcement, no blocking of direct `.abe` reads.
 
 ## Cline
 

@@ -2,24 +2,31 @@
 generic PreToolUse event: `beforeReadFile`, `beforeShellExecution`,
 `beforeMCPExecution`. Each gets its own registry entry
 ("cursor:beforeReadFile" etc.) since their input payloads differ, but they
-share one response shape: `{permission: "allow"|"deny"|"ask", agentMessage,
-userMessage}` - `agentMessage` is the channel that reaches the model
-(the role `additionalContext` plays for Claude Code/VS Code).
+share one response shape: `{permission: "allow"|"deny"|"ask",
+agent_message, user_message}` (snake_case - CONFIRMED against
+cursor.com/docs/hooks 2026-08, re-checked after installers/vscode.py's own
+guessed path/schema turned out to be simply wrong, prompting a full
+re-verification of every "built to spec" adapter in this package rather
+than trusting the original research). `agent_message` is the channel that
+reaches the model (the role `additionalContext` plays for Claude
+Code/VS Code). Earlier versions of this file used camelCase
+(`agentMessage`/`userMessage`) - a plausible-looking but wrong guess,
+same class of bug as vscode's path, just never caught because no live
+Cursor install had been tried yet either.
 
-STATUS: BUILT-TO-SPEC, UNVERIFIED - no Cursor install was available this
-session (see connector/docs/coverage-matrix.md). Field names below
-(`file_path`, `command`, `tool_name`/`arguments`) are best-effort readings
-of incomplete public docs and need confirming against a real payload
-before relying on this in production.
+STATUS: BUILT-TO-SPEC, UNVERIFIED - still no live Cursor install has been
+exercised end-to-end (see connector/docs/coverage-matrix.md); the
+2026-08 doc re-check above only confirms the schema on paper, not that
+this actually fires as expected in a live session.
 
 Known, accepted gap: Cursor has no pre-write-block hook (only the
 post-hoc `afterFileEdit`) - not modeled here, since this project has no
 legitimate `.abe` write path anyway (see core/decide.py's DENY_MUTATING).
 
 Known limitation: no separate "MCP server name" field was found in
-Cursor's `beforeMCPExecution` payload docs (only `tool_name`, `arguments`,
-`command` - the server's own launch command, `workspace_roots`) - so
-`mcp_target` here is inferred heuristically by checking whether
+Cursor's `beforeMCPExecution` payload docs (only `tool_name`, `tool_input`,
+and either `url` or `command` identifying the server's own launch/URL) -
+so `mcp_target` here is inferred heuristically by checking whether
 `tool_name` matches one of this project's own known tool names
 (`whoami`/`read_document`), not from an explicit server identifier. This
 is a real fragility if another MCP server ever exposes a same-named tool;
@@ -43,8 +50,8 @@ def _render(decision: Decision) -> RenderedResponse:
 
     return RenderedResponse(stdout=json.dumps({
         "permission": "deny",
-        "agentMessage": agent_message,
-        "userMessage": "PABEL: direct .abe access blocked - relayed result provided to the agent.",
+        "agent_message": agent_message,
+        "user_message": "PABEL: direct .abe access blocked - relayed result provided to the agent.",
     }))
 
 
@@ -73,7 +80,10 @@ def _parse_shell_execution(payload):
 
 def _parse_mcp_execution(payload):
     tool_name = payload.get("tool_name") or ""
-    arguments = payload.get("arguments") or payload.get("tool_input") or {}
+    # tool_input is the confirmed field name (cursor.com/docs/hooks); arguments
+    # kept only as a defensive fallback in case an older/different payload shape
+    # is ever seen live.
+    arguments = payload.get("tool_input") or payload.get("arguments") or {}
     mcp_target = ("pabel", tool_name) if tool_name in PABEL_TOOL_NAMES else None
     return NormalizedCall(tool_name=tool_name, tool_input=arguments, mcp_target=mcp_target)
 

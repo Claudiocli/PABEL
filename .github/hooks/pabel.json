@@ -1,0 +1,12 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "type": "command",
+        "command": "\"C:\\Users\\claudiol\\OneDrive - NTT DATA EMEAL\\Desktop\\Projects\\PABEL\\server\\.venv\\Scripts\\python.exe\" -m pabel_connector.hook vscode",
+        "windows": "& \"C:\\Users\\claudiol\\OneDrive - NTT DATA EMEAL\\Desktop\\Projects\\PABEL\\server\\.venv\\Scripts\\python.exe\" -m pabel_connector.hook vscode",
+        "timeout": 200
+      }
+    ]
+  }
+}

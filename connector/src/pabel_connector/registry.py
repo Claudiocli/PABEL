@@ -16,8 +16,12 @@ docs/coverage-matrix.md for the full picture and sources. Only
 other entry is built from vendor documentation only.
 """
 
-from .adapters import claude_code, codex_cli, copilot_cli, cursor, gemini_cli, vscode, windsurf
+from .adapters import claude_code, copilot_cli, cursor, gemini_cli, vscode, windsurf
 
+# codex-cli has no entry here (like cline/continue-dev in installers/registry.py) -
+# its hooks feature is documented as not available on Windows at all, the same
+# blocking criterion already applied to Cline; see installers/codex_cli.py and
+# docs/known-gaps.md.
 ADAPTERS = {
     "claude-code": claude_code,                                    # VERIFIED
     "vscode": vscode,                                              # UNVERIFIED
@@ -25,10 +29,9 @@ ADAPTERS = {
     "cursor:beforeReadFile": cursor.before_read_file,               # UNVERIFIED
     "cursor:beforeShellExecution": cursor.before_shell_execution,   # UNVERIFIED
     "cursor:beforeMCPExecution": cursor.before_mcp_execution,       # UNVERIFIED
-    "windsurf:pre_read_code": windsurf.pre_read_code,               # UNVERIFIED
-    "windsurf:pre_write_code": windsurf.pre_write_code,             # UNVERIFIED
-    "windsurf:pre_run_command": windsurf.pre_run_command,          # UNVERIFIED
-    "windsurf:pre_mcp_tool_use": windsurf.pre_mcp_tool_use,         # UNVERIFIED
+    "windsurf:pre_read_code": windsurf.pre_read_code,               # DEGRADED
+    "windsurf:pre_write_code": windsurf.pre_write_code,             # DEGRADED
+    "windsurf:pre_run_command": windsurf.pre_run_command,          # DEGRADED
+    "windsurf:pre_mcp_tool_use": windsurf.pre_mcp_tool_use,         # DEGRADED
     "gemini-cli": gemini_cli,                                      # UNVERIFIED
-    "codex-cli": codex_cli,                                        # DEGRADED, UNVERIFIED
 }

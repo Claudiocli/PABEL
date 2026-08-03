@@ -1,13 +1,38 @@
 """VS Code's native agent hooks (Preview).
 
-STATUS: UNVERIFIED. The exact config file path/name for this feature was
-not confirmed by public docs found this session (code.visualstudio.com's
-own reference page describes the schema, not a canonical file location) -
-`.vscode/hooks.json` (workspace-level) is a best guess following the same
-`.{agent}/hooks.json` convention several other tools in this package use,
-NOT a confirmed path. Verify against a real VS Code install (with a paid
-Copilot subscription, per connector/docs/coverage-matrix.md) before
-relying on this.
+STATUS: path/schema CONFIRMED (2026-08, checked against
+code.visualstudio.com/docs/agent-customization/hooks after a real
+first-attempt install was found to not fire at all - see
+docs/phase2-engineering-notes.md and connector/docs/coverage-matrix.md);
+still UNVERIFIED end-to-end against a real Copilot session.
+
+The first version of this installer wrote `.vscode/hooks.json` using
+Claude Code's nested `[{"matcher": ..., "hooks": [...]}]` shape - both
+wrong. The confirmed workspace-scope location is `.github/hooks/*.json`,
+and the confirmed `PreToolUse` shape is a FLAT array of hook command
+objects directly (`{"type": "command", "command": ..., "timeout": ...}`) -
+the nested matcher/hooks wrapper is only accepted when VS Code parses an
+actual `.claude/settings.json`-shaped file for cross-tool compatibility,
+not the native format for a file under `.github/hooks/`. VS Code is also
+documented to parse but NOT ENFORCE any `matcher` field at all - every
+hook in the array always runs regardless of tool name - so there was
+never a reason to write one, catch-all is the only mode that exists here.
+
+This bug meant the hook was never read by VS Code at all, for anyone who
+installed it before this fix - not a schema mismatch VS Code silently
+tolerated, a file it never looked at in the first place.
+
+**Second real bug, found live 2026-08 with the path fix in place**: VS
+Code's `command` field is executed via `powershell -Command` on Windows
+(docs confirm a separate `windows` override field exists precisely because
+`command`'s execution is OS-specific, and community sources confirm
+PowerShell specifically for the Windows case). `base.hook_command()`'s
+plain `"<python.exe>" -m pabel_connector.hook vscode` is invalid PowerShell
+syntax without the call operator (`&`) - PowerShell parses a leading quoted
+string as a standalone expression and rejects anything after it
+(`Unexpected token '-m' in expression or statement.`), confirmed against a
+real failing hook invocation. Fixed by also writing a `windows` field via
+`base.hook_command_windows()`, which prefixes `&`.
 """
 
 from pathlib import Path
@@ -17,7 +42,7 @@ from . import base
 name = "vscode"
 status = "unverified"
 
-CONFIG_RELATIVE_PATH = Path(".vscode") / "hooks.json"
+CONFIG_RELATIVE_PATH = Path(".github") / "hooks" / "pabel.json"
 HOOK_KEYS = ["vscode"]
 
 
@@ -33,14 +58,14 @@ def install(base_dir: Path) -> str:
     path = config_path(base_dir)
     data = base.read_json(path)
     hooks = data.setdefault("hooks", {})
-    pre_tool_use = hooks.setdefault("PreToolUse", [{}])
-    entry = pre_tool_use[0] if pre_tool_use and isinstance(pre_tool_use[0], dict) else {}
-    if not pre_tool_use:
-        pre_tool_use.append(entry)
-    entry["hooks"] = base.merge_hook_list(entry.get("hooks"), base.hook_command("vscode"))
-    pre_tool_use[0] = entry
+    hooks["PreToolUse"] = base.merge_hook_list(
+        hooks.get("PreToolUse"),
+        base.hook_command("vscode"),
+        extra_fields={"windows": base.hook_command_windows("vscode")},
+    )
     base.write_json(path, data)
     return (
         f"Wrote a catch-all PreToolUse hook to {path}\n"
-        f"(UNVERIFIED path/schema - confirm against a real VS Code install)."
+        f"(path/schema confirmed against code.visualstudio.com/docs/agent-customization/hooks; "
+        f"whether this actually fires as expected in a live Copilot session is still unverified)."
     )

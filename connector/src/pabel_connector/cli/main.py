@@ -1,9 +1,16 @@
 """Console-script `pabel-connector`: the one CLI an employee runs to wire
 PABEL enforcement into whichever agent(s) they use, log in, and check
 everything is configured. `install`/`uninstall`/`list` dispatch through
-installers/registry.py; `login`/`logout`/`doctor` are agent-independent,
-thin wrappers over pabel_client.session (the same OAuth session every
-adapter's relay call uses).
+installers/registry.py; `login`/`logout` are agent-independent, thin
+wrappers over pabel_client.session (the same OAuth session every adapter's
+relay call uses). `doctor` checks both: env vars/login are agent-
+independent, but it also re-checks, per installed agent, that its hook
+config still actually contains the pabel hook command - a stored
+credential with no working hook wired (install never run in this project
+directory, or its config file edited/reverted since) means nothing
+enforces PABEL for that agent at all, silently; doctor is where that
+becomes loud instead of only discoverable by noticing a missing audit
+trail after the fact.
 """
 
 import argparse
@@ -102,7 +109,44 @@ def cmd_logout(_args) -> int:
     return 0
 
 
-def cmd_doctor(_args) -> int:
+def _hook_wiring_ok(agent_id: str, base_dir: Path) -> "str | None":
+    """None if agent_id's own hook config actually contains the pabel hook
+    command(s) it's supposed to - the thing that turns a stored credential
+    into real enforcement. A credential can exist with no working hook at
+    all (exactly what happened with vscode - install was never run in this
+    project directory) with nothing else ever surfacing that; doctor is
+    where it should be loud instead of silent. Returns a one-line problem
+    description otherwise; installers with no config file at all (Claude
+    Code - it defers to its own plugin) are skipped, not flagged."""
+    installer = INSTALLERS.get(agent_id)
+    if installer is None:
+        return f"no installer registered for {agent_id!r} - can't check its hook wiring"
+    if not hasattr(installer, "config_path"):
+        return None  # e.g. claude-code: no config file of its own to check
+    path = installer.config_path(base_dir)
+    data = base.read_json(path)
+    commands = {base.hook_command(k) for k in installer.HOOK_KEYS}
+    found = {c for c in commands if _command_present(data, c)}
+    if found == commands:
+        return None
+    return (f"hook config at {path} is missing or doesn't call the pabel hook "
+            f"({len(commands) - len(found)}/{len(commands)} hook point(s) not wired) - "
+            f"nothing will actually enforce PABEL for {agent_id!r} until this is fixed. "
+            f"Run: pabel-connector install {agent_id} --dir {base_dir}")
+
+
+def _command_present(node, command: str) -> bool:
+    if isinstance(node, dict):
+        return any(_command_present(v, command) for v in node.values())
+    if isinstance(node, list):
+        return any(
+            (isinstance(item, dict) and item.get("command") == command)
+            or _command_present(item, command)
+            for item in node)
+    return False
+
+
+def cmd_doctor(args) -> int:
     ok = True
     for var in base.SHARED_ENV_VARS:
         import os
@@ -119,8 +163,15 @@ def cmd_doctor(_args) -> int:
         ok = False
     installed = agent_session.installations()
     if installed:
+        base_dir = Path(args.dir).resolve()
         for agent_id, client_id in installed.items():
-            print(f"  [ok] agent installation for {agent_id!r}: {client_id}")
+            problem = _hook_wiring_ok(agent_id, base_dir)
+            if problem is None:
+                print(f"  [ok] agent installation for {agent_id!r}: {client_id}")
+            else:
+                print(f"  [!!] agent installation for {agent_id!r} ({client_id}) exists, "
+                      f"but: {problem}")
+                ok = False
     else:
         print("  [!!] no agent installation credentials stored yet - run "
               "`pabel-connector install <agent>`")
@@ -156,7 +207,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_logout = sub.add_parser("logout", help="clear the saved PABEL session")
     p_logout.set_defaults(func=cmd_logout)
 
-    p_doctor = sub.add_parser("doctor", help="check env vars and login status")
+    p_doctor = sub.add_parser("doctor", help="check env vars, login status, and hook wiring")
+    p_doctor.add_argument("--dir", default=".",
+                          help="project directory each installed agent's hook config "
+                               "was written into (default: cwd) - used to verify the "
+                               "hook is actually wired, not just that a credential exists")
     p_doctor.set_defaults(func=cmd_doctor)
 
     return parser

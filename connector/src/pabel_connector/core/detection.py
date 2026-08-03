@@ -13,6 +13,8 @@ import json
 import re
 from pathlib import Path
 
+from ..pabel_client import agent_session, session
+
 ENCRYPTED_FILE = re.compile(r"(?i)[^\s\"'`]*\.abe\b")
 DOCUMENTS_PATH = re.compile(r"(?i)(^|[\\/])documents([\\/]|$)")
 OABE_BINARY = re.compile(r"(?i)\boabe_(setup|keygen|enc|dec)\b")
@@ -32,8 +34,77 @@ def mentions_target(tool_input):
     return bool(ENCRYPTED_FILE.search(text) or DOCUMENTS_PATH.search(text))
 
 
+def touches_pabel_credential_store(tool_input):
+    """True if this call's input mentions the on-disk path of this
+    installation's own PABEL secrets - the human session (session.py) or
+    an agent installation's client_secret/access_token (agent_session.py).
+    Nothing but this package's own code should ever read these directly: a
+    model doing so would leak a live, usable credential straight into its
+    own context, bypassing every other check in this file entirely (they
+    are never .abe files or under documents/, so mentions_target() alone
+    would wave this through). Checked against the same DATA_DIR
+    session.py/agent_session.py themselves resolve (respects
+    PABEL_PLUGIN_DATA_DIR), not a guessed path.
+
+    Walks tool_input's actual string values rather than json.dumps()-ing it
+    like mentions_target() does: JSON-encoding doubles backslashes, which
+    would never match a raw Windows path taken straight from
+    session.SESSION_FILE/agent_session.CREDENTIALS_FILE."""
+    targets = [str(session.SESSION_FILE), str(agent_session.CREDENTIALS_FILE)]
+
+    def walk(value):
+        if isinstance(value, str):
+            return any(target in value for target in targets)
+        if isinstance(value, dict):
+            return any(walk(v) for v in value.values())
+        if isinstance(value, list):
+            return any(walk(v) for v in value)
+        return False
+
+    return walk(tool_input)
+
+
 def invokes_oabe_binary(tool_input):
     return bool(OABE_BINARY.search(json.dumps(tool_input)))
+
+
+def _is_pabel_connector_source_checkout():
+    """True only when the current project IS this connector's own source
+    repo (the PABEL monorepo), detected structurally by looking for its
+    own known layout relative to cwd - deliberately NOT by asking
+    importlib/pip where the installed pabel_connector package resolves to.
+    That signal is useless here: `pip install -e connector` (this
+    project's own documented, current install method) makes an editable
+    install's __file__ point at this same source path even from a
+    completely unrelated downstream project that merely depends on it -
+    the only way to tell "this repo" apart from "a project that depends on
+    it" is to ask about the *project*, never the *package*."""
+    return (Path.cwd() / "connector" / "src" / "pabel_connector"
+            / "core" / "decide.py").exists()
+
+
+def invokes_pabel_connector_internals(tool_input):
+    """True if an execute-type call's command tries to import/invoke this
+    package's own modules directly - never something a model has a
+    legitimate reason to do in a normal project consuming pabel-connector
+    as a dependency: the hook is the only sanctioned way any of this ever
+    runs, and the hook's own invocation never appears here as a tool_input
+    being evaluated at all (it IS the thing evaluating - see hook.py, and
+    decide.py's own docstring). This is exactly the bypass a live vscode
+    Copilot session was found to use (docs/phase2-engineering-notes.md,
+    the GitHub Copilot.md transcript): with no hook wired yet, it called
+    `relay.read_document(..., 'claude-code')` directly from a Bash
+    one-liner, borrowing a different installation's credential entirely
+    outside anything this file could see.
+
+    Skipped entirely inside this package's own source checkout
+    (`_is_pabel_connector_source_checkout()`), where invoking these
+    modules directly - tests, agents_admin.py, doctor, manual live
+    verification - is routine, legitimate development work, not a bypass."""
+    if _is_pabel_connector_source_checkout():
+        return False
+    text = json.dumps(tool_input)
+    return bool(re.search(r"\bpabel_connector\b", text))
 
 
 def find_relayable_file(tool_input):

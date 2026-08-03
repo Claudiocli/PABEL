@@ -175,6 +175,21 @@ replaced an earlier one-container-per-agent design, and step 4 above for
 how a new agent product or installation is added without touching this
 service definition at all.
 
+Two separate things to look at when checking what this container actually
+did, and both `nerdctl compose` subcommands below only find `compose.yml`
+if run from this `server/` directory:
+
+- **Accountability trail** (who/what agent, allow/denied, per call):
+  `state/audit.jsonl` on the host (mounted from the container's
+  `/app/audit.jsonl` - see `PABEL_AUDIT_LOG_PATH` above). This is a
+  different file from the bare `audit.jsonl` a local, non-containerized run
+  of this same code writes next to itself (stdio mode, dev scripts, tests) -
+  the two are never the same process, so don't expect one to contain the
+  other's entries.
+- **Process output** (startup, tracebacks, anything printed rather than
+  audited): nothing is written to a file for this - `nerdctl compose logs
+  -f mcp-server` (or `keycloak`/`postgres` for those services).
+
 ## What this does and does not protect
 
 Keycloak is the source of truth for the human's identity/attributes; the

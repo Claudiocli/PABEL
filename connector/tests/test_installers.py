@@ -19,6 +19,28 @@ def test_merge_hook_list_preserves_other_entries():
     assert commands == {"someone-elses-hook", "cmd-a"}
 
 
+def test_merge_hook_list_upserts_extra_fields_on_rerun():
+    # A prior install() wrote the entry without a "windows" override; a
+    # later install() (after this package added one, e.g. the PowerShell
+    # call-operator fix) must repair it in place, not leave the stale entry
+    # untouched just because "command" already matched.
+    existing = [{"type": "command", "command": "cmd-a"}]
+    existing = base.merge_hook_list(existing, "cmd-a", extra_fields={"windows": "& cmd-a"})
+    assert existing == [{"type": "command", "command": "cmd-a", "windows": "& cmd-a",
+                          "timeout": base.HOOK_TIMEOUT_SECONDS}]
+
+
+def test_merge_hook_list_writes_generous_timeout():
+    # core/decide.py now blocks inside the hook to run an interactive
+    # browser+MFA login on demand rather than just denying - every written
+    # hook entry needs a "timeout" comfortably above oauth_browser.py's
+    # own 180s callback wait, or the agent's own (often ~60s) default hook
+    # timeout kills the subprocess before a human can finish logging in.
+    existing = base.merge_hook_list([], "cmd-a")
+    assert existing[0]["timeout"] == base.HOOK_TIMEOUT_SECONDS
+    assert base.HOOK_TIMEOUT_SECONDS > 180
+
+
 def test_remove_matching_commands_only_removes_named_ones():
     data = {"hooks": {"BeforeTool": [
         {"matcher": "write_file", "hooks": [{"command": "secret-scanner"}]},
@@ -31,17 +53,38 @@ def test_remove_matching_commands_only_removes_named_ones():
 
 
 def test_vscode_install_writes_catchall_pretooluse_hook(tmp_path):
+    # .github/hooks/*.json, flat PreToolUse array - confirmed against
+    # code.visualstudio.com/docs/agent-customization/hooks after the
+    # original .vscode/hooks.json guess turned out to never be read by VS
+    # Code at all (see docs/phase2-engineering-notes.md).
     INSTALLERS["vscode"].install(tmp_path)
-    data = json.loads((tmp_path / ".vscode" / "hooks.json").read_text())
-    command = data["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-    assert "pabel_connector.hook vscode" in command
+    data = json.loads((tmp_path / ".github" / "hooks" / "pabel.json").read_text())
+    entry = data["hooks"]["PreToolUse"][0]
+    assert "pabel_connector.hook vscode" in entry["command"]
+    # PowerShell (what VS Code's "command"/"windows" field runs through on
+    # Windows) rejects a bare quoted-path-plus-args string without the "&"
+    # call operator - confirmed live 2026-08 via a real failing hook
+    # invocation. The "windows" override must carry it.
+    assert entry["windows"].startswith("& ")
+    assert "pabel_connector.hook vscode" in entry["windows"]
+    assert entry["timeout"] == base.HOOK_TIMEOUT_SECONDS
 
 
 def test_vscode_install_is_idempotent(tmp_path):
     INSTALLERS["vscode"].install(tmp_path)
     INSTALLERS["vscode"].install(tmp_path)
-    data = json.loads((tmp_path / ".vscode" / "hooks.json").read_text())
-    assert len(data["hooks"]["PreToolUse"][0]["hooks"]) == 1
+    data = json.loads((tmp_path / ".github" / "hooks" / "pabel.json").read_text())
+    assert len(data["hooks"]["PreToolUse"]) == 1
+
+
+def test_copilot_cli_install_writes_windows_override(tmp_path):
+    # Same .github/hooks/*.json execution path as vscode, so it inherits
+    # the same PowerShell call-operator requirement on Windows - see
+    # installers/copilot_cli.py's docstring.
+    INSTALLERS["copilot-cli"].install(tmp_path)
+    data = json.loads((tmp_path / ".github" / "hooks" / "pabel-copilot-cli.json").read_text())
+    entry = data["hooks"]["preToolUse"][0]
+    assert entry["windows"].startswith("& ")
 
 
 def test_cursor_install_writes_all_three_hook_points(tmp_path):
@@ -90,19 +133,15 @@ def test_uninstall_removes_only_pabel_hooks(tmp_path):
     assert not any("pabel_connector.hook" in c for c in all_commands)
 
 
-def test_codex_cli_install_sets_feature_flag_and_is_idempotent(tmp_path, monkeypatch):
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+def test_codex_cli_is_a_documented_gap_not_an_installer(tmp_path):
+    # Codex CLI's hooks feature is documented as unavailable on Windows at
+    # all (see installers/codex_cli.py) - same category as Cline, a no-op
+    # explainer rather than something that writes config.
     codex_cli = INSTALLERS["codex-cli"]
-
-    first = codex_cli.install(tmp_path)
-    assert "enabled" in first
-    toml_text = (tmp_path / ".codex" / "config.toml").read_text()
-    assert "hooks = true" in toml_text
-
-    second = codex_cli.install(tmp_path)
-    assert "already enabled" in second
-    # No duplicate [features] section from a second install.
-    assert (tmp_path / ".codex" / "config.toml").read_text().count("[features]") == 1
+    assert codex_cli.status == "gap"
+    message = codex_cli.install(tmp_path)
+    assert "No adapter" in message
+    assert not (tmp_path / ".codex").exists()
 
 
 def test_claude_code_installer_prints_plugin_instructions_and_writes_nothing(tmp_path):

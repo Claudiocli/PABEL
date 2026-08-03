@@ -3,5 +3,6 @@
 audit.jsonl
 realm-org.json
 authority/
+state/
 __pycache__/
 .venv/

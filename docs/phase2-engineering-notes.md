@@ -1190,3 +1190,407 @@ this session never performed - the same wall §10.6/§11 kept hitting.
 Everything upstream of that single missing piece (agent-side
 authentication, specifically) is now confirmed working against real
 infrastructure, not just unit-tested against mocks.
+
+## 13. Two bugs found live-testing a non-Claude-Code agent for the first time (2026-07-31, later session)
+
+Trying to log in through an agent other than Claude Code (VS Code Copilot)
+was the first time this project actually drove `pabel-connector login`
+end to end rather than the plugin's own `login.py` - it surfaced two real
+bugs immediately, both latent since earlier in Phase 5 and invisible until
+something other than Claude Code's own path was exercised.
+
+### 13.1 `oauth_browser.py`'s connector copy used the wrong callback port
+
+Keycloak rejected the login with "Invalid parameter: redirect_uri", and
+the URL it was given used port 8767. The `pabel` client's *only*
+registered `redirectUris` entry (`realm-org.template.json`) is
+`http://127.0.0.1:8766/callback` - one client, one redirect URI, shared by
+every login path (`server/oauth_browser.py`, used by `server/login.py`/
+`core.py`'s dev login; and the connector's own ported copy,
+`connector/src/pabel_connector/pabel_client/oauth_browser.py`, used by
+`pabel-connector login` and, transitively, `claude-plugin/pabel/login.py`).
+The connector's copy defaulted `CALLBACK_PORT` to `8767` instead of `8766`
+- an unexplained divergence introduced when the file was ported (its own
+docstring says "same flow, same reasoning" as the server's, giving no
+reason for a different port, because there wasn't one). Nothing in
+`docs/` or the realm config ever registered a second redirect URI, so this
+was always a bug, not an intentional second port - it just went unnoticed
+because Claude Code's own verified-working session predated this file, or
+because `PABEL_CALLBACK_PORT` happened to be set by hand during whatever
+testing did pass. `.cursor/hooks/pabel_session_init.py` already injected
+`PABEL_CALLBACK_PORT=8766` into Cursor's own hook-subprocess environment -
+apparently an earlier, undocumented workaround for this exact mismatch -
+but that env var only reaches Cursor's *hook* subprocesses
+(`pabel_connector.hook cursor:...`), never a manually-run
+`pabel-connector login`, so it never actually fixed the login path for
+anyone. Fixed at the root: the connector's default is now `8766`, matching
+the server's and the one registered redirect URI. The Cursor workaround
+was left in place (harmless now that it matches the corrected default) but
+is no longer load-bearing.
+
+### 13.2 The containerized server's `audit.jsonl` was never reaching the host
+
+Separately: nothing from the containerized `mcp-server` (the actual
+shared, `streamable-http` deployment every non-Claude-Code agent relays
+through) was ever appearing in `server/audit.jsonl`, regardless of the
+above. `core.py`'s `AUDIT_LOG` was `Path(__file__).resolve().parent /
+"audit.jsonl"` - unconditionally relative to the module's own location.
+Inside the container that's `/app` (`Dockerfile`'s `WORKDIR`), and
+`compose.yml`'s `mcp-server` service never mounted anything back to
+`/app/audit.jsonl` - every entry a containerized run ever wrote landed in
+that container's own throwaway filesystem and was lost on the next
+`compose up`. The `server/audit.jsonl` visible on the host the whole time
+was exclusively from local, non-containerized runs (stdio mode, dev
+scripts) - a different file that happened to share a name and a directory,
+not a partial view of the same trail. This is a real gap in the
+accountability guarantee §0/the project README leads with ("who or what
+did this must be answerable from the log alone") for the one deployment
+topology - a single shared remote container - the project is actually
+meant to validate.
+
+Fixed by making the path configurable (`core.py`'s `AUDIT_LOG` now reads
+`PABEL_AUDIT_LOG_PATH`, falling back to today's behavior when unset - every
+non-container caller is unaffected) and giving `mcp-server` a real host
+mount for it: a new `./state:/app/state` volume plus
+`PABEL_AUDIT_LOG_PATH=/app/state/audit.jsonl`, landing at
+`server/state/audit.jsonl` on the host. A directory mount rather than a
+single-file one deliberately, so a fresh clone with no pre-existing audit
+file doesn't hit the classic bind-mount gotcha (a missing single-file
+source silently becoming a directory in both places).
+
+Neither bug involved the agent's own hook config at all - both sat
+strictly between "human logs in" and "a request from any agent reaches the
+server," so they would have blocked *every* agent equally, Claude Code
+included, the moment its login stopped going through a path that happened
+to dodge them. Still separately true and unrelated to either bug: VS Code
+Copilot itself had no PABEL wiring in this repo at all yet
+(`.vscode/hooks.json` didn't exist anywhere under the project) -
+`installers/vscode.py`'s own status is UNVERIFIED with an explicitly
+unconfirmed hook-file path/schema (§ coverage-matrix.md), so actually
+running `pabel-connector install vscode` is the next real test, and it may
+surface a third, genuinely VS-Code-specific gap rather than a shared one.
+
+### 13.3 A third bug, found trying to bring the real `mcp-server` up: a 25-hour-old container was squatting on its port, still running the pre-§12 trust model
+
+`nerdctl compose up -d mcp-server` (the actual fix verification step for
+§13.2) failed: `port is already allocated` on 8001. `nerdctl ps -a` showed
+why - `server-mcp-server-claude-code-1`, image
+`server-mcp-server-claude-code:latest`, **created 25 hours earlier** and
+still `Up`. This was the container from before this session's rename
+(§ above: `mcp-server-claude-code` → `mcp-server`, one shared service) -
+`nerdctl compose down`/renaming the service in `compose.yml` does not stop
+or remove a container compose no longer knows the name of, so it had been
+running untouched, on the one port every agent's `PABEL_SERVER_URL` points
+at, through this entire session's §12 work.
+
+Checked its actual environment (`nerdctl inspect ... Config.Env`):
+`PABEL_AGENT_ID=claude-code`, baked in at that old image's build/run time -
+the literal env var §12 exists to delete. Any agent that successfully
+reached `localhost:8001` at any point up to this point in the session -
+this includes whatever prompted the project owner to ask *"perché
+l'agente di vscode [dovrebbe impersonare] claude code e non usare il suo
+[...] id"* (why would the vscode agent impersonate claude code instead of
+using its own id) - was answered by this container, which has no
+`resolve_agent()`, no Keycloak `client_credentials` check, nothing: it
+trusted the fixed env var unconditionally, exactly like every container
+did before §12. The confusion had a literal, physical cause, not a vscode
+adapter defect: a leftover process from the design already being replaced
+was still the thing actually listening. Removed (`nerdctl rm -f`); the
+real `mcp-server` (image `server-mcp-server`, no `PABEL_AGENT_ID` anywhere
+in it) now holds 8001 instead.
+
+**A fourth, self-inflicted issue surfaced immediately after**, from the
+same `up -d mcp-server` call: nerdctl recreated `keycloak` and `postgres`
+too, not just `mcp-server` - apparently nerdctl compose recomputes a
+config-hash and reconciles every service whenever `compose.yml` changes at
+all, not just the service actually touched (unconfirmed whether this is
+nerdctl-specific behavior or shared with `docker compose`; not
+investigated further, just now known to happen). Postgres's data survived
+(`server_pgdata` is a named volume, untouched by container recreation).
+Keycloak's did not: `start-dev --import-realm` only ever repopulates what
+`realm-org.json` describes (the three demo users, the `pabel` client,
+fixed realm roles) - anything created afterward through the live Admin
+API, i.e. every Keycloak client `agents_admin.py create-installation` had
+ever made, was gone. Confirmed directly (`GET
+.../clients?clientId=...` for each): both of this machine's
+until-then-"active" installations (`claude-code`, `cursor` -
+`pabel-agent-claude-code-08cf6c47f9e0aaa3` and
+`pabel-agent-cursor-4fd67f81c52ac96f`) had a live Postgres row pointing at
+a Keycloak client that no longer existed - not a hypothetical failure
+mode, a real one, on this exact machine, at this exact moment. No human
+session/MFA state was actually lost, since (§12, "Still open") one had
+never yet been established.
+
+Fixed using the project's own designed recovery path, nothing ad hoc:
+`revoke-installation` on both dead rows (Postgres now honestly reflects
+"unusable" instead of silently lying "active"; the tool's own
+best-effort Keycloak-side disable predictably no-oped with a clear warning,
+since that client was already gone - exactly the degraded-but-safe
+behavior `revoke-installation` was written for), then
+`create-installation` for fresh `claude-code`/`cursor` credentials, then
+`pabel-connector install <agent> --client-id ... --client-secret ...` to
+overwrite the dead entries in this machine's own
+`~/.pabel/agent_credentials.json`. Re-verified **against the live,
+post-recreation stack** rather than assumed fixed: both new installations
+obtained a real `client_credentials` token, and each token round-tripped
+through the real `core.resolve_agent()` (not a mock) to the expected
+`(agent_id, "")` - the same soft, no-role-granted outcome §12's live
+verification already exercised, now reproduced from scratch. `nerdctl
+images`/`network ls` also had two stale images
+(`server-mcp-server-claude-code`, and an older, differently-tagged
+`pabel-mcp-server:test` from even earlier manual testing, both confirmed
+unused by any container) and one orphaned network (`service_default`, zero
+attached containers, name predating this directory being called `server/`)
+- all removed. `nerdctl ps -a`/`images`/`volume ls`/`network ls` now show
+exactly what `compose.yml` currently describes and nothing else.
+
+Net effect of this whole detour: the project's actual, shared,
+`resolve_agent()`-checked `mcp-server` had - despite §12 believing itself
+"verified live" - never actually been reachable on its own advertised
+port even once before today, because something else had always answered
+first.
+
+## 14. "Could an agent just lie about who it is?" - two concrete hardenings, prompted by §13.3
+
+The project owner's reaction to §13.3, reasonably: if a leftover container
+could silently mislabel every request as claude-code, what actually stops
+an agent from "lying" more generally, and shouldn't every adapter be
+*forced* through its own specific Keycloak login rather than trusted to
+do the right thing on its own? Worth being precise about what was already
+true versus what genuinely wasn't, rather than assuming either "already
+fine" or "wide open."
+
+**Already true, re-confirmed by re-reading `decide.py`/`agent_session.py`
+line by line rather than from memory**: an agent product never performs
+its own Keycloak login and never gets to pick which credential is used.
+`agent_id` (from `hook.py`, `key.split(":", 1)[0]`) is a fixed string
+baked into that specific installer's own hook-config command at install
+time - not something the agent supplies at request time. Every path that
+talks to the PABEL server (the relay in `read_document`, and the
+direct-call injection branch) unconditionally calls this installation's
+own `agent_session.access_token(agent_id)`, which performs a real
+`client_credentials` grant against Keycloak using only the specific
+secret an admin provisioned for that exact installation. `decide.py`'s own
+docstring already stated the intended model precisely: `agent_id` is "a
+local key selecting which of this installation's own stored credentials
+to use... never a value sent anywhere as a claimed identity" - the server
+only ever trusts the verified token's `azp` claim (`resolve_agent()`).
+None of this can be skipped or substituted by the agent product itself,
+because the agent product's own code never runs any part of it.
+
+**What genuinely wasn't covered, and is the real shape of the §13.3
+incident**: when *no hook is wired at all* for a given agent (exactly
+vscode's situation - no `.vscode/hooks.json` existed in this project),
+none of the above runs, at all - there's no "wrong credential" to catch
+because our code isn't in the loop to begin with. A stored credential
+with a broken/missing/reverted hook is invisible: nothing surfaced it
+until §13.3 was investigated by hand. Separately, and unrelated to hook
+wiring: this installation's own local secrets
+(`~/.pabel/session.json`, `~/.pabel/agent_credentials.json`) were never
+protected from being read directly by the model like any other file -
+`decide()`'s existing checks only ever look for `.abe`/`documents/`
+mentions, so a plain `Read`/`Bash cat` on either file would have sailed
+through unremarked, handing a live, usable credential straight into the
+model's own context (a far more direct route to "acting as that agent"
+than anything about hook wiring).
+
+**Fixed, both scoped and shipped this session**:
+
+1. **`pabel-connector doctor` now checks hook wiring, not just that a
+   credential exists.** For every agent with stored credentials
+   (`agent_session.installations()`), a new `_hook_wiring_ok()`
+   (`cli/main.py`) resolves that installer's `config_path`/`HOOK_KEYS`
+   (skipped for installers with no config file of their own, e.g.
+   claude-code) and checks the expected `pabel-connector-hook` command(s)
+   are actually present in the file, not merely that the file exists.
+   `doctor` gained a `--dir` option to know where to look (matching
+   `install`/`uninstall`). Verified live by staging exactly the vscode
+   scenario - a stored credential, `--dir` pointed at this repo, no
+   `.vscode/hooks.json` - and confirming doctor reports precisely: *"hook
+   config at [...] is missing or doesn't call the pabel hook (1/1 hook
+   point(s) not wired) - nothing will actually enforce PABEL for 'vscode'
+   until this is fixed."* Test entry removed afterward, real `doctor`
+   output confirmed clean again for `claude-code`/`cursor`.
+
+2. **Reading PABEL's own local credential files is now denied
+   unconditionally**, before any other check in `decide()` runs.
+   `detection.py` gained `touches_pabel_credential_store()`, resolving
+   the *actual* `session.SESSION_FILE`/`agent_session.CREDENTIALS_FILE`
+   paths (respects `PABEL_PLUGIN_DATA_DIR`, not a guessed path) and
+   walking `tool_input`'s real string values for them - deliberately not
+   `json.dumps()`-then-regex like `mentions_target()`, since JSON-encoding
+   doubles backslashes and would never match a raw Windows path (found
+   via a failing test before the fix landed). New `DecisionKind.
+   DENY_CREDENTIAL_ACCESS`; every adapter already treats "anything but
+   ALLOW" as a generic deny using `decision.reason`, so zero adapter
+   changes were needed. **Verified live, not just by its own test suite**:
+   this repo's own Claude Code session (i.e., this very agent) attempted a
+   `Read` on `agent_credentials.json` for unrelated cleanup and was
+   denied by its own hook with exactly this message - about as direct a
+   confirmation as this kind of check can get.
+
+10 new tests (`connector/tests/test_detection.py`,
+`test_decide.py`, new `test_cli_doctor.py`) - 73 connector tests total, up
+from 63, all passing.
+
+**Still not "prevented" in an absolute sense, worth naming rather than
+implying otherwise**: a hookless agent's own native MCP connection can
+still reach the PABEL server directly and would still need a genuinely
+valid `agent_token` the server verifies - nothing here changes that this
+was already sound. What changed is closing the two concrete ways an
+*installed* credential's protection could silently not apply: an
+uninstalled/broken hook (now loud in `doctor`), and this installation's
+own secrets being as readable as any other file (now denied outright).
+Re-opening whether an agent's *own* native OAuth connection could itself
+carry a verified per-product identity is the already-rejected §4.2/§12.2
+idea (blocked by Claude Code's DCR-generated client_id and, likely, most
+other agents' equivalent) - not reopened here.
+
+## 15. A third hardening (hook-bypass detection), then a live vscode test that broke everything open
+
+### 15.1 Closing the bypass §14 didn't cover: direct invocation of this package's own internals
+
+§14 closed "reading credential files directly" and "no hook installed at
+all is invisible." A third, sharper version of the same worry (project
+owner: *"non dovremmo assumere che facciano di testa loro"* - we shouldn't
+assume they'll do their own thing) turned up in a saved transcript
+(`GitHub Copilot.md`, predating this section's fix): with no vscode hook
+wired yet, Copilot ran `relay.read_document('documents/Test.abe',
+'Test.abe', 'claude-code')` directly from a Bash one-liner - not a
+cryptographic forgery (the server truthfully attributed the read to
+claude-code, the credential that was actually presented), but a real
+audit-trail misattribution, and exactly the kind of "improvise past the
+enforcement" behavior an agent with unrestricted code execution can always
+attempt.
+
+The project owner's own follow-up question resolved the obvious objection
+before it needed asking: doesn't blocking this risk false positives in
+this repo, where `pabel_connector` internals are invoked constantly as
+routine development? The answer is structural, not behavioral: the hook's
+own legitimate invocation of these functions never appears as a
+`tool_input` `decide()` evaluates *at all* - hook.py's own process *is*
+the evaluator, not something being evaluated. Only a model's own
+Bash/terminal tool call asking to import these modules directly is
+ever a `tool_input` in the first place, and a model has no legitimate
+reason to construct one in a normal downstream project. The remaining
+question was how to tell "this repo, developing the connector" apart from
+"a project that merely depends on it" - resolved by asking about the
+*project* (does `connector/src/pabel_connector/core/decide.py` exist
+relative to cwd - i.e. is this literally the PABEL monorepo), never the
+*installed package* (an editable `pip install -e connector` - this
+project's own current, documented install method - would resolve to this
+same source path even from a totally unrelated downstream project, making
+that signal useless).
+
+Added: `detection.py`'s `invokes_pabel_connector_internals()` +
+`_is_pabel_connector_source_checkout()`, a new `DecisionKind.
+DENY_HOOK_BYPASS`, checked in `decide()` right after the credential-store
+check, scoped to `is_execute` calls only (a `Write`/`Edit` merely
+mentioning the package name - e.g. in a requirements.txt - is not itself
+dangerous; running code is). Verified live in the most direct way
+available twice over: a synthetic test reproducing the exact transcript
+command, and this repo's own Claude Code session (i.e. this agent,
+mid-conversation) confirmed unaffected running its own routine `doctor`/
+`agents_admin.py` commands throughout.
+
+### 15.2 The real vscode live test: nothing fired, root cause was the install location itself
+
+Following up on the credential/role setup needed to actually try vscode
+live (registering the `vscode` agent product, creating an installation,
+discovering along the way that Keycloak's dev-mode durability gap - §2
+point 5 - had also silently dropped `cursor`'s realm role across the
+container-recreation incident in §13.3, fixed by recreating both roles),
+a real VS Code Copilot session was pointed at the repo and asked to read
+`documents/Test.abe`. Saved transcript: `vs_code_chat_2` (test directory).
+Copilot read the file completely unobstructed via a raw terminal command -
+the hook never fired at all, and when told directly to use it, Copilot
+could not explain how, eventually just repeating meta-commentary about
+"checking the real channel" without ever producing a blocked/relayed
+result. **That itself was the tell**: in a working setup (Claude Code),
+the model never needs to be told to "use the hook" - it just attempts a
+normal read and is transparently redirected. Needing to ask at all meant
+the hook had not fired even once.
+
+Root cause, found by re-checking code.visualstudio.com's current docs
+rather than trusting the original (2026-07) research: `installers/
+vscode.py` wrote `.vscode/hooks.json` - **a path VS Code's real "agent
+hooks (Preview)" feature never reads at all**. The confirmed
+workspace-scope location is `.github/hooks/*.json`. This was not a schema
+mismatch VS Code tolerated or partially handled - it was a file VS Code
+never looked at, so literally nothing in this package's design was ever
+exercised in that live session, regardless of anything else being right
+or wrong. The JSON shape written was also wrong independently (Claude
+Code's nested `[{"hooks": [...]}]` wrapper; VS Code's confirmed native
+shape is a flat array directly under the event key) and the adapter's
+tool-name assumptions were also wrong (real names are `editFiles`/
+`createFile`/`deleteFile`/`runTerminalCommand`, not Claude Code's `Write`/
+`Edit`/`Bash`). All three fixed; both this repo's own `.github/hooks/
+pabel.json` and the separate `pabel-vscode-test` directory's copy were
+regenerated at the corrected path. Full detail in `installers/vscode.py`
+and `adapters/vscode.py`'s own docstrings.
+
+### 15.3 One live miss prompted re-auditing every other "built to spec" adapter
+
+Given a guess this specific and this wrong had gone unnoticed since the
+original Phase 4 research, every other UNVERIFIED adapter's assumptions
+were re-checked against current official docs the same way, rather than
+continuing to trust research that had already been shown capable of being
+confidently, plausibly wrong. Real, confirmed findings, most already
+fixed (all in `connector/docs/coverage-matrix.md` in full, with sources):
+
+- **Cursor**: response field names were camelCase
+  (`agentMessage`/`userMessage`) - confirmed docs show snake_case
+  (`agent_message`/`user_message`). Same class of mistake as vscode's
+  path, just never caught because no live Cursor session had been tried
+  either. `beforeMCPExecution`'s input field is confirmed `tool_input`,
+  not `arguments` (the original priority order). Fixed.
+- **Windsurf/Cascade**: reclassified DEGRADED, not just UNVERIFIED - the
+  single biggest open question in the original research (does stderr ever
+  reach the model, or only a human log) is now confirmed **negatively**:
+  exit-code-2-plus-stderr only, no JSON response mechanism at all, stderr
+  explicitly documented as human-visible-log-only. Transparent relay is
+  confirmed impossible here, not merely unverified - a real vendor
+  ceiling no amount of further live testing can lift. Per-hook input
+  field names were also wrong (`command_line` not `command`;
+  `mcp_server_name`/`mcp_tool_name`/`mcp_tool_arguments`, not `tool_name`/
+  `arguments` - and `mcp_server_name` being a real, explicit field means
+  `mcp_target` no longer needs Cursor's tool-name-heuristic fragility
+  here). Fixed.
+- **GitHub Copilot CLI**: config was written to a single `~/.copilot/
+  hooks.json` file - confirmed docs show user-level hooks actually load
+  from `*.json` files inside a `~/.copilot/hooks/` *directory*, and
+  separately confirm a project-scoped `.github/hooks/*.json` alternative
+  (same convention VS Code uses) that fits this package's own `--dir`
+  install convention better. Switched to that. Fixed.
+- **Gemini CLI**: held up essentially unchanged - config location, nested
+  matcher/hooks shape, MCP naming convention, and the
+  fold-content-into-`reason` design (confirmed `additionalContext`
+  belongs to different, non-`BeforeTool` events) all matched current
+  docs exactly. Included in the matrix for completeness, not because
+  anything needed fixing - useful proof the re-audit wasn't just finding
+  problems everywhere by construction.
+- **OpenAI Codex CLI**: reclassified from DEGRADED to **NO ADAPTER**,
+  moved to `docs/known-gaps.md` alongside Cline. The original research
+  covered the Bash-only coverage gap but missed that Codex CLI's hooks
+  feature is itself documented as "experimental (disabled by default,
+  **not available on Windows**)" - confirmed independently via two
+  separate searches. This is the identical blocking criterion already
+  applied to Cline (employee machines can't be assumed non-Windows) - not
+  a new policy, just a fact the first pass never surfaced. `adapters/
+  codex_cli.py` deleted; `installers/codex_cli.py` rewritten as a no-op
+  explainer matching `cline.py`'s pattern; removed from `registry.py`'s
+  `ADAPTERS`.
+
+Net effect: 79 connector tests (up from 73), all passing; three real,
+previously-undetected schema/path bugs fixed (vscode, cursor,
+copilot-cli); one adapter's achievable behavior corrected downward to
+match a confirmed vendor ceiling (windsurf); one adapter removed entirely
+on a newly-confirmed platform fact (codex-cli). Every one of these bugs
+had been sitting in this package, unnoticed, since Phase 4 - none of them
+were caught by the 73-test unit suite, because unit tests exercise this
+package's own logic, never the vendor's actual file-loading and field
+naming. The lesson this session keeps re-teaching itself (§2 point 2,
+§12's zombie container, this section): confirming behavior against a real
+external system beats re-deriving it from documentation or memory, and a
+"BUILT-TO-SPEC" label is only as good as whichever spec was actually
+read.

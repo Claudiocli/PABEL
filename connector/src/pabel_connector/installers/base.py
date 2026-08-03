@@ -35,6 +35,19 @@ SHARED_ENV_VARS = [
     "PABEL_SERVER_URL",
 ]
 
+HOOK_TIMEOUT_SECONDS = 200
+"""core/decide.py now blocks inside the hook to run an interactive browser
++MFA login on demand (oauth_browser.py's own callback wait is 180s) rather
+than just denying and telling a human to run a separate CLI command later -
+found necessary 2026-08 after a live VS Code Copilot session's login kept
+silently failing to persist, root-caused to the *agent's own* default hook
+timeout (commonly ~60s) killing the hook subprocess before a human could
+finish the browser flow. Every installer below writes this value as the
+hook entry's own "timeout" field so the host doesn't kill it first - a
+number comfortably above 180s, not exact per-vendor tuning. Best-effort:
+some vendors may cap this lower themselves; nothing here can detect or
+override that, only ask for enough room."""
+
 
 class Installer(Protocol):
     name: str
@@ -60,6 +73,23 @@ def hook_command(key: str) -> str:
     to find it is unconfirmed for most targets in this package (notably on
     Windows) - see connector/docs/coverage-matrix.md."""
     return f'"{sys.executable}" -m pabel_connector.hook {key}'
+
+
+def hook_command_windows(key: str) -> str:
+    """Same invocation as `hook_command`, prefixed with PowerShell's call
+    operator `&` - confirmed necessary 2026-08 via a real, live VS Code
+    Copilot session: VS Code's `windows`/default `command` field is executed
+    through `powershell -Command` on Windows (per
+    code.visualstudio.com/docs/agent-customization/hooks, "powershell maps
+    to windows"), where a bare quoted-path-plus-arguments string like
+    `"C:\\...\\python.exe" -m pabel_connector.hook vscode` is a parser
+    error (`Unexpected token '-m' in expression or statement.`) - PowerShell
+    parses the leading quoted string as a standalone expression and refuses
+    to treat what follows as arguments unless `&` invokes it as a command.
+    cmd.exe and POSIX shells don't need (or, for cmd.exe, even support) this
+    prefix, which is why this is a separate Windows-only override rather
+    than a change to `hook_command` itself."""
+    return f"& {hook_command(key)}"
 
 
 def read_json(path: Path) -> dict:
@@ -97,15 +127,23 @@ def remove_matching_commands(node, commands) -> bool:
 
 
 def merge_hook_list(existing: list, command: str, extra_fields: dict = None) -> list:
-    """Append `command` to a hooks-array-of-objects config only if it isn't
-    already present (by exact command string) - makes install() idempotent
-    and never duplicates or clobbers a hook some other tool already put
-    there."""
+    """Append `command` to a hooks-array-of-objects config, keyed by exact
+    command string - makes install() idempotent and never duplicates or
+    clobbers a hook some other tool already put there. If an entry for this
+    exact command already exists, `extra_fields` (and `timeout`) are still
+    merged into it (upsert, not skip) - re-running install() after this
+    package fixes a bug in what it writes alongside `command` (e.g. adding
+    a `windows` override, or raising HOOK_TIMEOUT_SECONDS) must repair an
+    already-installed config, not silently leave the old, broken entry in
+    place."""
     existing = list(existing or [])
     for entry in existing:
         if isinstance(entry, dict) and entry.get("command") == command:
+            entry["timeout"] = HOOK_TIMEOUT_SECONDS
+            if extra_fields:
+                entry.update(extra_fields)
             return existing  # already installed
-    entry = {"type": "command", "command": command}
+    entry = {"type": "command", "command": command, "timeout": HOOK_TIMEOUT_SECONDS}
     if extra_fields:
         entry.update(extra_fields)
     existing.append(entry)

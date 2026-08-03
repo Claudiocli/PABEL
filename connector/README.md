@@ -30,12 +30,12 @@ sends it to the server."
 | Agent | Status | Notes |
 |---|---|---|
 | Claude Code | **VERIFIED** | Confirmed end-to-end against a real deployed server. Install via the existing `claude-plugin/pabel/` plugin - see `pabel-connector install claude-code`. |
-| VS Code native agent hooks (Preview) | UNVERIFIED | Same schema as Claude Code per docs; not tried live (needs a paid Copilot subscription). |
-| GitHub Copilot CLI | UNVERIFIED | `additionalContext` unreliable per open vendor issues - content folded into the deny reason as a robust fallback. |
-| Cursor | UNVERIFIED | 3 hook points (read/shell/MCP); no pre-write-block hook exists (low-impact, no legit write path anyway). |
-| Windsurf/Cascade | UNVERIFIED | 4 hook points; whether relayed content reaches the model at all (vs. only a log) is unconfirmed - least-trusted adapter here. |
-| Gemini CLI | UNVERIFIED | Catch-all `BeforeTool` matcher; content folded into the deny reason. |
-| OpenAI Codex CLI | **DEGRADED** | Vendor limitation: hooks only fire for the Bash tool - native file reads are not interceptable at all today. |
+| VS Code native agent hooks (Preview) | UNVERIFIED | Path/schema confirmed against current docs (`.github/hooks/*.json`, flat `PreToolUse` array - an earlier guess at `.vscode/hooks.json` was simply wrong, never read by VS Code at all); not yet tried against a real Copilot session with the corrected config. |
+| GitHub Copilot CLI | UNVERIFIED | Path confirmed (`.github/hooks/*.json`; an earlier guess at a single `~/.copilot/hooks.json` was wrong). `additionalContext` unreliable per open vendor issues - content folded into the deny reason as a robust fallback. |
+| Cursor | UNVERIFIED | 3 hook points (read/shell/MCP); response field names confirmed as snake_case (`agent_message`/`user_message` - an earlier camelCase guess was wrong). No pre-write-block hook exists (low-impact, no legit write path anyway). |
+| Windsurf/Cascade | **DEGRADED** | 4 hook points, per-hook field names confirmed. Blocking is confirmed exit-code-2-plus-stderr only, reaching a human-visible log, never the model's context - transparent relay is confirmed impossible here, not just unverified. |
+| Gemini CLI | UNVERIFIED | Catch-all `BeforeTool` matcher; content folded into the deny reason. Held up unchanged under a full doc re-check. |
+| OpenAI Codex CLI | **NO ADAPTER** | Hooks are documented as not available on Windows at all - same reasoning that already excludes Cline. See `docs/known-gaps.md`. |
 | Cline | **NO ADAPTER** | Hooks are Windows-unsupported today; see `docs/known-gaps.md`. |
 | Continue.dev | **NO ADAPTER** | No pre-tool-use hook primitive exists; see `docs/known-gaps.md`. |
 
@@ -135,10 +135,14 @@ UNVERIFIED.
 
 ## Known open items
 
-See `docs/known-gaps.md` for Cline/Continue.dev, and `docs/coverage-matrix.md`
-for exactly what's confirmed vs. assumed for every other adapter. In
-short: only Claude Code has been tried against a real, live install this
-session - every other adapter should be spot-checked against its real
-agent before being trusted in production, starting with Windsurf (least
-confirmed) and Codex CLI (structurally limited by the vendor, not by this
-design).
+See `docs/known-gaps.md` for Cline/Continue.dev/Codex CLI, and
+`docs/coverage-matrix.md` for exactly what's confirmed vs. assumed for
+every other adapter. In short: only Claude Code has been tried against a
+real, live install - path/schema for every other adapter has now at least
+been re-checked against current official docs (a live VS Code attempt
+found its original guess was simply wrong, which prompted re-verifying
+all of them; several other real bugs turned up and are already fixed -
+see coverage-matrix.md), but none of them has been exercised end-to-end
+against a real agent session yet. Windsurf is structurally limited
+(confirmed no channel to relay content to the model, not just unverified)
+regardless of further testing.

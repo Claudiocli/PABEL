@@ -1,8 +1,11 @@
 from pabel_connector.core.detection import (
     find_relayable_file,
     invokes_oabe_binary,
+    invokes_pabel_connector_internals,
     mentions_target,
+    touches_pabel_credential_store,
 )
+from pabel_connector.pabel_client import agent_session, session
 
 
 def test_mentions_target_matches_abe_file():
@@ -58,3 +61,40 @@ def test_find_relayable_file_handles_quoted_spaced_paths_in_free_text(tmp_path):
 
 def test_find_relayable_file_none_when_file_does_not_exist():
     assert find_relayable_file({"file_path": "Z:/nonexistent/ghost.abe"}) is None
+
+
+def test_touches_pabel_credential_store_matches_session_file():
+    assert touches_pabel_credential_store({"file_path": str(session.SESSION_FILE)})
+
+
+def test_touches_pabel_credential_store_matches_agent_credentials_file():
+    assert touches_pabel_credential_store(
+        {"command": f'cat "{agent_session.CREDENTIALS_FILE}"'})
+
+
+def test_touches_pabel_credential_store_ignores_unrelated_input():
+    assert not touches_pabel_credential_store({"file_path": "/repo/README.md"})
+
+
+def test_invokes_pabel_connector_internals_blocked_outside_source_checkout(
+        tmp_path, monkeypatch):
+    """The exact bypass found live: a Bash one-liner importing
+    pabel_connector's own modules directly, in a normal downstream project
+    that has no connector/src/pabel_connector of its own."""
+    monkeypatch.chdir(tmp_path)
+    command = ("python -c \"from pabel_connector.pabel_client import agent_session; "
+              "print(agent_session.access_token('claude-code'))\"")
+    assert invokes_pabel_connector_internals({"command": command})
+
+
+def test_invokes_pabel_connector_internals_allowed_inside_source_checkout():
+    # Running from this repo's own root (pytest's cwd) - connector/src/
+    # pabel_connector genuinely exists here, so this is legitimate
+    # development work (tests, agents_admin.py, doctor), not a bypass.
+    command = "python -m pabel_connector.cli.main doctor --dir ."
+    assert not invokes_pabel_connector_internals({"command": command})
+
+
+def test_invokes_pabel_connector_internals_ignores_unrelated_command(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert not invokes_pabel_connector_internals({"command": "ls -la"})
