@@ -80,12 +80,6 @@ every relay - see `server/README.md` and `docs/phase2-engineering-notes.md`
 for why a single shared server can no longer just trust whichever URL it
 was reached at.
 
-`claude-code` is installed exactly like every other agent above - no
-special case. (An earlier version of this package shipped a separate
-Claude Code marketplace plugin with its own install path; that gave
-Claude Code a privileged lane none of the other agents got, so it was
-removed - see docs/phase2-engineering-notes.md.)
-
 ## Configure
 
 Every agent needs the same environment variables (the installer prints
