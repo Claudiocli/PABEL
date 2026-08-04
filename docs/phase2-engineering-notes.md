@@ -1946,3 +1946,184 @@ explicitly as **opportunistic-only, never worth triggering in isolation**,
 so it stops reading as a nagging always-open item. No code or doc change
 beyond this note; the risk (an untested realm-import declaration) is
 accepted as-is until a recreation happens anyway.
+
+## 19. Managed settings, an informational skill, and a "usa e getta" materialized copy (2026-08-04, later session)
+
+Three items from `points.txt` (the user's own notes from a call with a tutor
+and a colleague) were compared against the real state of the code this
+session and found to be genuine gaps, not false alarms - this section covers
+closing (or deliberately, explicitly not closing) all three. Worked on a
+dedicated branch (`phase6-managed-settings-skill-materialize`), not `main`,
+per the user's own explicit request.
+
+### 19.1 Managed settings - Claude Code only, researched not guessed
+
+Confirmed via live web research (not assumed, consistent with this project's
+standing rule since the vscode path/schema incident of always checking
+current vendor docs rather than trusting prior research): Claude Code has a
+real, enforceable managed-settings layer. `allowManagedHooksOnly: true` (paired
+with `allowManagedPermissionRulesOnly: true`) makes the managed layer the only
+source of hooks that runs at all - a project's or user's own
+`.claude/settings.json` can no longer add, remove, or override them. Two
+Windows deployment channels, both confirmed: registry
+(`HKLM\SOFTWARE\Policies\ClaudeCode\Settings`, via GPO/Intune) or file
+(`C:\Program Files\ClaudeCode\managed-settings.json`). The one sharp edge
+worth remembering: malformed JSON in that layer makes Claude Code silently
+fall back to user/project settings with **no visible error** - the worst
+failure mode, since it looks like enforcement is still active. Documented in
+new `connector/docs/managed-settings.md`, including the exact JSON to deploy
+(the same hook commands `pabel-connector install claude-code` itself writes,
+now including the `SessionEnd` hook from §19.3) and the `/status` check to
+verify the managed layer is actually active after deploying.
+
+**Addendum, same session**: a live test (deliberately deleting the hook from
+this repo's own `.claude/settings.json` to demonstrate the exposure, then
+restoring it via git) prompted the follow-up question of whether
+`allowManagedHooksOnly`/`allowManagedPermissionRulesOnly` also cover `.mcp.json`'s
+`pabel`/`pabel-connector` registrations. Checked against current docs rather
+than assumed: they don't - MCP server enforcement is a wholly separate
+mechanism (`managed-mcp.json`, a standalone file, exclusive-control mode) with
+its own bypassable weaker alternative (`allowedMcpServers` +
+`allowManagedMcpServersOnly`, defeated by `claude --mcp-config` loading an
+unapproved server anyway - `anthropics/claude-code#31508`, reproduced on
+v2.1.70, **closed "not planned"** - i.e. accepted current behavior for that
+mechanism, not a queued fix) - `managed-settings.md` updated with a full
+section on this, recommending the exclusive-control file over the bypassable
+allowlist.
+
+VS Code/Copilot has an analogous-sounding channel ("Copilot managed settings",
+MDM-deployed via Intune/Jamf/Group Policy, registry key
+`HKEY_LOCAL_MACHINE\SOFTWARE\Policies\GitHubCopilot`, confirmed to apply
+consistently across both VS Code and Copilot CLI) - but nothing found in this
+research confirms it locks down *hooks* specifically, as opposed to broader
+feature flags like `chat.agent.enabled` or model access. Deliberately not
+written up as deployable guidance on a guess; flagged as unconfirmed in both
+`managed-settings.md` and `connector/README.md`'s "Known open items", to be
+revisited only once actually checked against current docs the same way every
+other "built to spec vs. confirmed" claim in this project already is.
+
+### 19.2 An informational skill - explicitly not a security control
+
+Discussed and decided early in this session: a Claude Code Skill explaining
+PABEL (why reads get transparently intercepted, how to read a mixed
+accessible/`[ACCESS DENIED]` result, when to reach for `whoami`/
+`read_document`/`materialize_document` directly) is worth having, but purely
+as an onboarding/UX aid - never as enforcement. The reasoning: a Skill is
+advice a model can ignore; the `PreToolUse` hook is the only thing that's
+actually imposed regardless of what any skill says, and has been since this
+project's very first version. Giving a Skill any load-bearing security role
+would contradict "always pick the strongest enforceable option" (this
+project's own standing default) for zero benefit, and risks someone later
+loosening the hook on the mistaken belief the skill covers it.
+
+New `connector/src/pabel_connector/skills/pabel/SKILL.md`, frontmatter marked
+`security_relevant: false` and the body saying so again in its own first
+paragraph - a real risk this session had already surfaced once (§18.1: a
+subagent with no PABEL context mistook a hook deny message for a prompt
+injection attempt) made it worth over-stating rather than leaving implicit.
+Packaged *inside* the wheel (`src/pabel_connector/skills/...`, with a new
+`[tool.setuptools.package-data]` entry in `pyproject.toml`) rather than
+alongside it in the source checkout - a first attempt at a sibling
+`connector/skills/` folder was caught before shipping: nothing outside
+`src/pabel_connector/` survives into the installed wheel (confirmed by
+re-reading `pyproject.toml`'s existing `packages.find` config, same class of
+mistake as forgetting a file needs to live inside the package to be
+`importlib.resources`-loadable after install, not just present in the repo).
+`installers/claude_code.py` copies it to `.claude/skills/pabel/SKILL.md` at
+install time (and removes it on uninstall) - inherently Claude-Code-only
+since Skills aren't a cross-agent concept, not a reopening of the
+no-special-casing principle this package otherwise holds to.
+
+### 19.3 `materialize_document` - a real request, a design walked back to something smaller and more honest
+
+The user's actual ask: an explicit "read this encrypted document and make me a
+real local copy" flow, distinct from the existing "just read it, get relayed
+content in the model's context" path - useful when someone genuinely wants a
+file, not just to see the content once. The user was also explicit up front
+that the copy would eventually need reconstituting into the document's
+original format (docx, xml, ...) and that a future version might let a human
+request it directly from the server without an agent at all - both explicitly
+out of scope for this round, noted only so the design here doesn't preclude
+them later (§19.4).
+
+The harder requirement, and where this section's design history actually
+matters: the user wanted freshness enforced **mid-session**, not just
+"deleted when the session ends" - if the source document changed, or the
+user's/agent's attributes were revoked, after a local copy was made but
+before the session ended, a later touch of that copy shouldn't silently hand
+back stale or now-unauthorized content. This went through three real design
+iterations in one session, each rejected for a concrete reason rather than
+just preference:
+
+1. **First design** (proposed after a full codebase read + a second pass
+   specifically hunting for holes in it): client-side cache directory,
+   `decide()` gains a new detection category for "this call touches our own
+   materialized-copy directory," and every access transparently redoes the
+   full `read_document` relay call before allowing it through - full
+   re-verification on every touch, no server-side state, no document
+   identifier needed. Technically sound (confirmed by a dedicated design-
+   review pass that found and fixed a real bug in the first draft: caching
+   the *ciphertext* instead of the *source path* would have made "redo the
+   relay" always return the same answer, silently defeating the "detect a
+   changed source" half of the requirement) - but **rejected by the user**:
+   "once it's on disk, it's not our problem anymore." Once written, a
+   materialized copy should be an ordinary local file, not something
+   `decide()` keeps gatekeeping.
+2. **Second design**, following that correction: keep a table pairing
+   document/user/download-timestamp, and have the **server proactively push a
+   notification to the specific device** when it detects the source changed
+   after that timestamp. Researched before designing further (not assumed):
+   MCP's 2026-07-28 spec revision does support server-initiated notifications,
+   but only via a `subscriptions/listen` stream a client opts into and keeps
+   open - nothing like that exists anywhere in this connector today, which is
+   built entirely of short-lived processes (the hook subprocess exits after
+   one tool call; `mcp_local_server.py` exists only for one session's
+   duration). Real push would need a new always-on local daemon per
+   installation, plus the deployed server abandoning its deliberate
+   statelessness to start keeping a document store of its own and tracking
+   who downloaded what. **Rejected by the user** on hearing this cost: "manteniamo
+   la struttura stateless... non reinventiamo la ruota."
+3. **Final design, shipped**: `materialize_document` is a one-shot tool - read
+   through the normal relay once, write the result to a local file under
+   `~/.pabel/materialized/<agent_id>/`, done. No manifest, no source-path
+   bookkeeping, no refresh, no new `decide()` branch, no server changes at
+   all. The only guarantee left is a bound on exposure time, not continuous
+   correctness: a new Claude Code `SessionEnd` hook (a real, distinct event,
+   confirmed to fire once per session with a termination reason, separate
+   from the per-turn `Stop` event already used everywhere else in this
+   package) unconditionally purges the whole per-agent cache directory
+   regardless of why the session ended. If the source changes or attributes
+   are revoked mid-session, the existing local copy does **not** reflect
+   that until `materialize_document` is explicitly called again - stated
+   plainly as the accepted behavior, in the tool's own docstring, in
+   `connector/README.md`, and in `server/mcp_server.py`'s/`server/README.md`'s
+   own docstrings (framed there as a deliberate boundary of what a
+   deliberately stateless server can protect, not a gap nobody noticed).
+
+Implementation: `pabel_client/materialize.py` (new - `create_async()`,
+`purge_all()`), a new tool in `mcp_local_server.py`, `adapters/
+claude_code.py`'s new `handle_session_end()`, a new `SESSION_END_HANDLERS`
+dispatch table in `registry.py` (SessionEnd isn't a tool call, so it doesn't
+fit `NormalizedCall`/`Decision` and gets its own small table rather than
+forcing that shape), `hook.py`'s `main()` checking that table before
+`ADAPTERS`, and `installers/claude_code.py` writing the second `SessionEnd`
+hook entry alongside the existing `PreToolUse` one (`HOOK_KEYS` grew to two
+entries, the same multi-hook-point mechanism Cursor/Windsurf already use -
+`cli/main.py`'s uninstall/doctor commands picked this up for free via the
+existing `installer.HOOK_KEYS` iteration).
+
+### 19.4 Explicitly deferred - recorded here so they aren't silently forgotten
+
+Two ideas came up this session, both real, both deliberately not built:
+
+- **True mid-session freshness via server push**: would need the deployed
+  server to start keeping a document store and tracking who has a copy of
+  what, plus a new always-on local daemon per installation to actually
+  receive a push (see §19.3.2). A project of its own, not an extension of
+  what exists - revisit only if a real requirement makes the stateless-server
+  trade-off worth reopening.
+- **Direct human access to a decrypted document without an agent** (e.g. a
+  traditional editor asking the MCP server for a document directly) - a
+  different scope than this project manages today (agent-mediated access),
+  raised by the user as an interesting future direction, explicitly not this
+  project's perimeter right now.

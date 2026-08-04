@@ -38,7 +38,7 @@ import sys
 
 from mcp.server.fastmcp import FastMCP
 
-from .pabel_client import relay, session
+from .pabel_client import materialize, relay, session
 from .pabel_client.keycloak_client import AuthError
 
 AGENT_ID = None  # set by main() - see the module docstring's usage line
@@ -98,6 +98,27 @@ async def read_document(path: str, name: str = "document") -> dict:
     the current workspace) or you're deliberately re-checking access."""
     try:
         return await relay.read_document_with_login_async(path, name, AGENT_ID)
+    except (AuthError, relay.RelayError) as e:
+        return {"ok": False, "error": str(e)}
+
+
+@mcp.tool()
+async def materialize_document(path: str, name: str = "document") -> dict:
+    """Read an ABE-encrypted document at `path` and write its decrypted
+    content to a local file under this installation's own PABEL cache
+    directory - use this when explicitly asked to read AND copy a document,
+    not for a normal read (just reading the file directly, or calling
+    read_document, is enough for that - a hook normally handles it
+    automatically).
+
+    Once written, PABEL no longer governs this file: it is deleted
+    automatically when the session ends, but it is NOT re-verified or kept in
+    sync with the source while the session is open. Treat it as any other
+    local file for that window - if you need a copy that reflects a
+    since-changed source or revoked access, call this again rather than
+    trusting an old one."""
+    try:
+        return await materialize.create_async(path, name, AGENT_ID)
     except (AuthError, relay.RelayError) as e:
         return {"ok": False, "error": str(e)}
 

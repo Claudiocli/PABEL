@@ -9,7 +9,7 @@ parse()/render() differ.
 import sys
 
 from .core.decide import decide
-from .registry import ADAPTERS
+from .registry import ADAPTERS, SESSION_END_HANDLERS
 
 
 def main(argv=None):
@@ -18,6 +18,19 @@ def main(argv=None):
         sys.stderr.write("usage: pabel-connector-hook <agent-key> [adapter-args...]\n")
         return 2
     key, rest = argv[0], argv[1:]
+
+    # SessionEnd isn't a tool call - no NormalizedCall/Decision fits it, so it
+    # bypasses decide()/ADAPTERS entirely via its own small dispatch table.
+    session_end_handler = SESSION_END_HANDLERS.get(key)
+    if session_end_handler is not None:
+        stdin_bytes = sys.stdin.buffer.read()
+        response = session_end_handler(stdin_bytes)
+        if response.stdout:
+            sys.stdout.write(response.stdout)
+        if response.stderr:
+            sys.stderr.write(response.stderr)
+        return response.exit_code
+
     adapter = ADAPTERS.get(key)
     if adapter is None:
         sys.stderr.write(f"pabel-connector-hook: unknown agent key {key!r}\n")

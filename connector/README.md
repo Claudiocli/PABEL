@@ -29,7 +29,7 @@ sends it to the server."
 
 | Agent | Status | `--global`? | Direct MCP tools | Notes |
 |---|---|---|---|---|
-| Claude Code | **VERIFIED** | Yes | Yes | Confirmed end-to-end against a real deployed server. Installed exactly like every other agent - `pabel-connector install claude-code --dir .` - no special or separate path. |
+| Claude Code | **VERIFIED** | Yes | Yes (+ `materialize_document`, a one-shot local decrypted copy - see below) | Confirmed end-to-end against a real deployed server. Installed exactly like every other agent - `pabel-connector install claude-code --dir .` - no special or separate path. |
 | VS Code (native agent hooks, Preview) | **VERIFIED** | No (no confirmed user-level location) | Yes | Confirmed live 2026-08-03: blocked read, automatic browser+MFA login, relay, correct per-user `[ACCESS DENIED]` result. |
 | GitHub Copilot CLI | UNVERIFIED | Yes | Not yet wired | Path confirmed against current docs; `additionalContext` unreliable per open vendor issues (#2585/#2980) - content folded into the deny reason instead. |
 | Cursor | UNVERIFIED | Yes | Not yet wired | 3 hook points (read/shell/MCP); response fields confirmed snake_case. No pre-write-block hook exists (low-impact - `core/decide.py`'s `DENY_MUTATING` covers writes regardless). |
@@ -122,6 +122,22 @@ present credentials the same deployed server verifies for real, so none
 of this is a security gap, just the accounting for what "logged in" and
 "installed" actually mean here.
 
+## Materialized copies (Claude Code only)
+
+`materialize_document(path, name="document")` - one of `mcp_local_server.py`'s
+tools - reads an encrypted document and writes its decrypted content to a real
+local file, for when you want an actual copy rather than just seeing it in the
+model's context. **Once written, PABEL no longer governs that file**: no
+re-verification on later access, no write protection, nothing tracking whether
+the source it came from has since changed - deliberately, not as a gap (see
+`docs/managed-settings.md`'s neighbor, `docs/phase2-engineering-notes.md`, for
+why real mid-session freshness enforcement would require this server to start
+keeping a document store and a way to reach a specific device unprompted,
+neither of which this project takes on). The one guarantee kept: a Claude Code
+`SessionEnd` hook deletes every materialized copy automatically when the
+session ends, bounding how long a decrypted copy can sit on disk to at most one
+session.
+
 ## Distribution
 
 From v0.1.0 on, this package is released as a wheel attached to a GitHub
@@ -141,6 +157,17 @@ testers and agents. Run it before changing any adapter's status away from
 UNVERIFIED.
 
 ## Known open items
+
+Nothing in this package stops an employee from removing the hook, or the
+`pabel`/`pabel-connector` MCP server entries, from their own `.claude/settings.json`/
+`.mcp.json` after install - enforcement so far has relied on them not doing that.
+`docs/managed-settings.md` covers making both non-removable for Claude Code (two
+separate, confirmed enterprise mechanisms - hooks and MCP registration aren't
+governed by the same flag, and the MCP allowlist mechanism has a real,
+un-fixed-by-design CLI-flag bypass worth reading about before choosing which one
+to deploy). VS Code has an analogous-looking channel that isn't yet confirmed to
+cover hooks specifically - see that document before assuming it works the same
+way there.
 
 See `docs/known-gaps.md` for Cline/Continue.dev/Codex CLI, and
 `docs/coverage-matrix.md` for exactly what's confirmed vs. assumed for

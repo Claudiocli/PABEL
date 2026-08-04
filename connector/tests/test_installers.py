@@ -177,6 +177,52 @@ def test_claude_code_install_is_idempotent(tmp_path):
     assert len(data["hooks"]["PreToolUse"]) == 1
 
 
+def test_claude_code_install_writes_session_end_hook(tmp_path):
+    # A real, distinct Claude Code event (fires once per session, not once
+    # per turn like Stop) - purges anything materialize_document left
+    # behind this session. See pabel_client/materialize.py.
+    INSTALLERS["claude-code"].install(tmp_path)
+    data = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    block = data["hooks"]["SessionEnd"][0]
+    entry = block["hooks"][0]
+    assert "pabel_connector.hook claude-code:session-end" in entry["command"]
+    assert entry["timeout"] == base.HOOK_TIMEOUT_SECONDS
+
+
+def test_claude_code_install_is_idempotent_for_session_end_too(tmp_path):
+    INSTALLERS["claude-code"].install(tmp_path)
+    INSTALLERS["claude-code"].install(tmp_path)
+    data = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    assert len(data["hooks"]["SessionEnd"]) == 1
+
+
+def test_claude_code_install_writes_the_informational_skill(tmp_path):
+    INSTALLERS["claude-code"].install(tmp_path)
+    skill_path = tmp_path / ".claude" / "skills" / "pabel" / "SKILL.md"
+    assert skill_path.exists()
+    text = skill_path.read_text()
+    # Never mistakable for a security control - see docs/phase2-engineering-notes.md 19.2.
+    assert "security_relevant: false" in text
+    assert "grants and\nenforces nothing itself" in text
+
+
+def test_claude_code_uninstall_also_removes_the_skill_file(tmp_path):
+    from pabel_connector.cli.main import main as cli_main
+
+    INSTALLERS["claude-code"].install(tmp_path)
+    skill_path = tmp_path / ".claude" / "skills" / "pabel" / "SKILL.md"
+    assert skill_path.exists()
+    exit_code = cli_main(["uninstall", "claude-code", "--dir", str(tmp_path)])
+    assert exit_code == 0
+    assert not skill_path.exists()
+
+
+def test_claude_code_global_install_writes_skill_to_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    INSTALLERS["claude-code"].install(tmp_path / "some-project", global_=True)
+    assert (tmp_path / ".claude" / "skills" / "pabel" / "SKILL.md").exists()
+
+
 def test_claude_code_install_registers_both_mcp_servers(tmp_path):
     INSTALLERS["claude-code"].install(tmp_path)
     data = json.loads((tmp_path / ".mcp.json").read_text())

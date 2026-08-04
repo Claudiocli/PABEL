@@ -25,6 +25,21 @@ for the human, core.resolve_agent() for the agent - nothing is cached as
 "authenticated" beyond a single call. This server is strictly read-only: it
 exposes no way to write or encrypt anything.
 
+Deliberately stateless with respect to documents themselves: this server keeps
+no store of its own to reach into or keep in sync (see read_document's
+docstring) - it only ever decrypts bytes a caller hands it, for that one call.
+That boundary was reaffirmed rather than a gap in 2026-08 when a client-side
+"materialize a local decrypted copy" feature was designed
+(connector/pabel_client/materialize.py): keeping this server able to enforce
+freshness on such a copy after the fact would mean it starts owning a document
+store and a way to reach a specific device unprompted, neither of which exist
+today - see docs/phase2-engineering-notes.md for the reasoning. A materialized
+copy is out of this server's - and this whole project's - reach the moment it
+lands on a caller's disk, the same way any other plaintext a legitimate caller
+receives is; the mitigation is bounding that copy's lifetime client-side
+(deleted at session end), not chasing continuous server-side enforcement of
+something the server structurally cannot see.
+
 Supports both transports from the same code: PABEL_TRANSPORT=stdio (the
 default - a local, per-session process, as Phase 1 used) or
 PABEL_TRANSPORT=streamable-http (a remote, shared server - see compose.yml).

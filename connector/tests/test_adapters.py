@@ -70,6 +70,35 @@ def test_claude_code_render_deny_with_relay_includes_additional_context():
     assert json.loads(output["additionalContext"]) == content
 
 
+def test_claude_code_handle_session_end_purges_the_cache_unconditionally(monkeypatch):
+    calls = []
+    monkeypatch.setattr(claude_code.materialize, "purge_all", lambda agent_id: calls.append(agent_id))
+    resp = claude_code.handle_session_end(json.dumps({"reason": "clear"}).encode())
+    assert calls == ["claude-code"]
+    assert resp.stdout == "" and resp.stderr == "" and resp.exit_code == 0
+
+
+def test_claude_code_handle_session_end_purges_regardless_of_reason(monkeypatch):
+    # Deliberately doesn't branch on the payload's own "reason" field
+    # (clear/resume/logout/...) - over-purging on every reason is safe, not
+    # lossy, since nothing here is meant to persist across a session boundary.
+    calls = []
+    monkeypatch.setattr(claude_code.materialize, "purge_all", lambda agent_id: calls.append(agent_id))
+    claude_code.handle_session_end(json.dumps({"reason": "logout"}).encode())
+    claude_code.handle_session_end(b"")
+    assert calls == ["claude-code", "claude-code"]
+
+
+def test_claude_code_handle_session_end_reports_cleanup_failure_on_stderr(monkeypatch):
+    def raise_os_error(agent_id):
+        raise OSError("directory locked")
+
+    monkeypatch.setattr(claude_code.materialize, "purge_all", raise_os_error)
+    resp = claude_code.handle_session_end(b"{}")
+    assert "directory locked" in resp.stderr
+    assert resp.exit_code == 0
+
+
 # --- vscode (same schema as claude_code) ----------------------------------
 
 def test_vscode_matches_claude_code_schema():

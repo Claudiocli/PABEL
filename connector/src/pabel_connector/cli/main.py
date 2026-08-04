@@ -106,6 +106,13 @@ def cmd_uninstall(args) -> int:
         print(f"Removed pabel hooks from {path}")
     else:
         print(f"No pabel hooks found in {path} - nothing to do.")
+
+    if hasattr(installer, "SKILL_RELATIVE_PATH"):
+        skill_path = (base.global_config_path(installer.SKILL_RELATIVE_PATH) if args.global_
+                      else Path(args.dir).resolve() / installer.SKILL_RELATIVE_PATH)
+        if skill_path.exists():
+            skill_path.unlink()
+            print(f"Removed {skill_path}")
     return 0
 
 

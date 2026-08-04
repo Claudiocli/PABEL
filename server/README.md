@@ -208,5 +208,19 @@ key would - this server is the only thing that ever touches it, and it is
 never written to `.mcp.json`, an agent's environment, or anywhere an agent
 could read it.
 
+Nor does this server protect a decrypted result once it's legitimately
+handed back to a caller and lands on that caller's own disk - e.g. a
+connector-side feature that writes a local, one-shot decrypted copy for
+convenience (`connector/pabel_client/materialize.py`). This server stays
+deliberately stateless with respect to documents (no store of its own to
+keep in sync, no notion of "who has a copy of what"), so it structurally
+cannot reach back and revoke or refresh such a copy after the fact - the
+same category of limitation as the master key point above, not an oversight:
+building that would mean this server starts keeping a document store plus a
+way to reach a specific device unprompted, both explicitly avoided rather
+than added for this (see `docs/phase2-engineering-notes.md`). The mitigation
+is bounding a local copy's lifetime on the client side, not chasing an
+enforcement guarantee this server cannot structurally provide.
+
 The `.abe` on-disk format (`document.py`) is this project's current
 working format, not a settled spec - it may change.
