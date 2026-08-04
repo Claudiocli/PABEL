@@ -128,9 +128,9 @@ From v0.1.0 on, this package is released as a wheel attached to a GitHub
 Release - `pip install <url-to-the-.whl-asset>` needs nothing but that one
 file, no repo clone. `pip install -e .` from a checkout still works too,
 for development. An internal package index (so a bare `pip install
-pabel-connector` works without a URL) is a further step, tracked as an
-open item for whoever runs a real company-wide rollout - not needed at
-this project's current scale.
+pabel-connector` works without a URL) is deliberately out of scope for
+this project - not a pending task, just a decision left to whoever runs a
+real company-wide rollout, if that ever happens.
 
 ## Verifying an adapter against a real install
 

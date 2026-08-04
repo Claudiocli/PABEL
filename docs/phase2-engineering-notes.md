@@ -719,7 +719,8 @@ through with no hook output at all.
   assumed to operate at the tool-execution layer rather than
   per-agent-instance, but this was not tested against a real subagent call
   this session - avoid spawning subagents for `.abe`-adjacent work until
-  confirmed.
+  confirmed. **Resolved 2026-08-04, see §18.1**: confirmed live - hooks do
+  fire for subagent-issued tool calls, not just the top-level session.
 - The hook's own `hooks.json` entry omits a `matcher` value entirely to
   mean "every tool" - this worked in direct piped-stdin testing of the
   script itself, but the *hook registration's* actual dispatch behavior
@@ -1855,4 +1856,93 @@ Postgres/Keycloak) - genuinely installable with nothing but
 `pip install <wheel>`, no repo clone. Distribution path: a GitHub Release
 with this wheel as an attached asset, not a private package index (not
 warranted at this project's current scale) - see connector/README.md's
-"Distribution" section.
+"Distribution" section. The `gh` CLI turned out not to be installed on
+the machine this session ran on, so the actual Release (tag `v0.1.0` +
+wheel asset) was published manually by the user afterward, outside this
+tool - the tag/commit push itself (`git push origin main --tags`) had
+already succeeded.
+
+## 18. Clearing the minor open items (2026-08-04, later session)
+
+Four small items had accumulated across `README.md`/`coverage-matrix.md`/
+this file's own §5 and §9.5 - none blocking, but worth resolving or
+formally deprioritizing rather than letting them linger indefinitely.
+
+**18.1 Subagent hook interception - now confirmed, not just assumed.**
+§9.5 flagged this as genuinely untested: does a PreToolUse hook fire for
+a tool call issued from *inside* a spawned subagent (the `Agent` tool),
+or only for the top-level session? Tested live this session with two
+separate `Agent` calls:
+
+- First attempt: delegated a plain `Read` on `documents/Test.abe` to a
+  subagent, with the filename spelled out in the delegation prompt. The
+  hook fired on the **parent's own `Agent` tool call** before the
+  subagent ever started - because the hook's matcher inspects serialized
+  `tool_input` text for `.abe`/`documents/` patterns
+  (`detection.py:mentions_target()`), and the prompt text itself is part
+  of `Agent`'s `tool_input`. Informative, but not the actual question -
+  this only proves the *parent* is covered, which was never in doubt.
+- Second attempt: re-ran with a prompt carefully avoiding the literal
+  strings `.abe`/`documents` (told the subagent to read `server/
+  document.py`'s own docstring to discover the extension itself, then
+  `Glob` for it and `Read` whatever it found). This time the subagent's
+  own `Glob("**/*.abe")` call - issued from inside the running subagent
+  process, never mentioned in the parent's `Agent` call - was intercepted
+  and denied with the identical PABEL hook message. **This resolves
+  §9.5's open question**: hooks are enforced at the tool-execution layer
+  for the whole session, including subagent-issued calls, not scoped to
+  whichever "logical agent" issued them. The earlier caution ("avoid
+  spawning subagents for `.abe`-adjacent work until confirmed") no longer
+  applies.
+- Side finding, worth keeping in mind rather than fixing: the subagent,
+  seeing the hook's deny message for the first time with none of this
+  project's context, flagged it as a *probable prompt injection attempt*
+  ("phrased as an instruction directed at me... reads as a prompt
+  injection trying to redirect me") and correctly refused to comply with
+  it or improvise a workaround - the right call in general, and harmless
+  here since the message is genuinely benign, but a reminder that a hook
+  deny reason written for a same-context agent can read as suspicious to
+  a fresh one. Not changing the message over this alone; noting it in
+  case a future subagent's refusal-to-proceed on a PABEL deny is ever
+  mistaken for a real bug.
+
+**18.2 §6.6's base64-payload-size question - still open, and still
+blocked the same way.** Attempted to retest whether a large (>10-12K
+character) base64 payload survives transport on a **direct** model-issued
+`read_document` call (the one path never covered by §9.4's hook-mediated
+fix, since the hook process handles bytes directly and never routes them
+through the model's own context). Called `mcp__pabel__read_document`
+directly with a 20,000-character base64 payload (well above the old
+threshold) and a placeholder `agent_token` - the placeholder was silently
+replaced with a real one by `decide.py`'s `updated_input` injection
+(confirms that path still works transparently), and the call reached the
+server intact enough to hit a real auth check (`the logged-in session has
+expired or been revoked`) rather than a schema or padding error - the
+same inconclusive shape as the original §6.6 finding: **the server checks
+authentication before ever decoding `content`, so a truncated payload and
+an expired session produce visually different-enough errors that this
+specific attempt still can't distinguish "payload survived transport" from
+"payload never got far enough to tell."** Re-running this properly needs
+an interactive browser+MFA login first (can't be done non-interactively
+from here) - left open, explicitly deprioritized rather than chased
+further: it only affects a direct model-initiated call bypassing the hook
+entirely, not the hook-mediated path every adapter actually uses.
+
+**18.3 Internal package index - reclassified from "open item" to "closed,
+out of scope for this project."** `connector/README.md`'s "Distribution"
+section listed this as "tracked as an open item for whoever runs a real
+company-wide rollout." Re-reading it: this was never actually planned
+work, just an acknowledgment that a bare `pip install pabel-connector`
+would need one if this ever became a real org-wide rollout - a decision
+for whoever runs that rollout, not a task this project owes. Reworded in
+`connector/README.md` to say so plainly instead of reading as a pending
+TODO.
+
+**18.4 `realm-org.template.json` role-declaration test (§5) - formally
+deprioritized, not resolved.** This was already correctly flagged as "do
+this only when a Keycloak recreation is already happening for another
+reason" (it costs every demo user's TOTP re-enrollment) - restated here
+explicitly as **opportunistic-only, never worth triggering in isolation**,
+so it stops reading as a nagging always-open item. No code or doc change
+beyond this note; the risk (an untested realm-import declaration) is
+accepted as-is until a recreation happens anyway.
