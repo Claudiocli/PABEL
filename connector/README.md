@@ -165,9 +165,13 @@ Nothing in this package stops an employee from removing the hook, or the
 separate, confirmed enterprise mechanisms - hooks and MCP registration aren't
 governed by the same flag, and the MCP allowlist mechanism has a real,
 un-fixed-by-design CLI-flag bypass worth reading about before choosing which one
-to deploy). VS Code has an analogous-looking channel that isn't yet confirmed to
-cover hooks specifically - see that document before assuming it works the same
-way there.
+to deploy - `managed-mcp.json`'s exclusive-control mode instead, confirmed not
+affected). `pabel-connector generate-managed-settings` produces both files from
+this package's own source of truth (never hand-typed), and `deploy/
+Deploy-ManagedSettings.ps1` deploys them - an admin-only, deliberately manual
+step, same split `server/agents_admin.py` already draws elsewhere. VS Code has
+an analogous-looking channel that isn't yet confirmed to cover hooks
+specifically - see that document before assuming it works the same way there.
 
 See `docs/known-gaps.md` for Cline/Continue.dev/Codex CLI, and
 `docs/coverage-matrix.md` for exactly what's confirmed vs. assumed for

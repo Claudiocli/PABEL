@@ -13,6 +13,24 @@ and "what an employee's own install command does." Two separate mechanisms are
 involved - hooks and MCP server registration aren't governed by the same flag,
 covered in their own sections below.
 
+**Don't hand-type the JSON below.** Generate it instead, from the same
+`hook_command()`/`mcp_server_command()` source `install()` itself uses, so a
+future change to either can't silently drift from what gets deployed here:
+
+```
+pabel-connector generate-managed-settings --out-dir . --python-path "C:\PabelPython\python.exe"
+```
+
+`--python-path` must be a machine-wide interpreter every managed device
+actually has `pabel-connector` installed into - not a per-developer venv path
+(see the caveat under "The JSON to deploy" below); omit it only to preview the
+output shape, never to actually deploy. This writes `managed-settings.json`
+and `managed-mcp.json` into `--out-dir`, matching exactly the two sections
+below. Deploy them with `connector/deploy/Deploy-ManagedSettings.ps1` (run as
+Administrator on the target machine - see that script's own header), or by
+hand following the paths in each section below; either way, verify with the
+checks in "The one failure mode that matters most".
+
 This is scoped to **Claude Code only**. Claude Code has a confirmed, real
 mechanism for this (below). GitHub Copilot/VS Code has an analogous-sounding
 "Copilot managed settings" channel (MDM-deployed, applies across VS Code and
@@ -54,12 +72,19 @@ a plain deployment script, etc.):
 C:\Program Files\ClaudeCode\managed-settings.json
 ```
 
+`connector/deploy/Deploy-ManagedSettings.ps1` does either, given the two files
+`pabel-connector generate-managed-settings` produced - run as Administrator on
+the target machine, `-Mode Registry` or `-Mode File` (default), `-WhatIf`
+supported to preview without writing anything.
+
 ## The JSON to deploy
 
 Pin exactly the hook commands `pabel-connector install claude-code` itself
 would have written - same values `installers/claude_code.py` produces via
 `base.hook_command()`, just placed in the managed layer instead of a
-project/user file:
+project/user file. Shown here for reference - `pabel-connector
+generate-managed-settings` (above) produces this exact shape, filled in with
+whatever `--python-path` you gave it:
 
 ```json
 {
@@ -139,7 +164,9 @@ C:\Program Files\ClaudeCode\managed-mcp.json
 ```
 
 Content - same shape as a normal `.mcp.json`, pinning exactly the two servers
-`installers/claude_code.py` itself would have registered:
+`installers/claude_code.py` itself would have registered. Shown here for
+reference - `pabel-connector generate-managed-settings` (above) produces this
+exact shape too, in the same run that writes `managed-settings.json`:
 
 ```json
 {

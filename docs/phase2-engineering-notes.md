@@ -2127,3 +2127,79 @@ Two ideas came up this session, both real, both deliberately not built:
   different scope than this project manages today (agent-mediated access),
   raised by the user as an interesting future direction, explicitly not this
   project's perimeter right now.
+
+## 20. Turning §19.1's guide into a real tool, despite the CLI-flag bypass (2026-08-05, later session)
+
+§19.1's addendum documented a real, confirmed limitation: `allowedMcpServers`
+(the softer MCP allowlist mechanism) has a permanently-accepted CLI-flag bypass
+(`anthropics/claude-code#31508`, closed "not planned"), and `managed-settings.md`
+already recommended `managed-mcp.json`'s exclusive-control mode instead, which
+is confirmed unaffected. User instruction this session, given knowing about
+that limitation: implement the guide's recommendations as real tooling anyway
+- "pur essendoci una vulnerabilità è imperativo fornire tutti gli strumenti di
+protezione che possiamo al momento." The gap being closed here isn't the
+bypass itself (already routed around by preferring `managed-mcp.json`), but
+that the guide had previously stopped at "here is JSON to hand-type" - real
+friction that either goes stale against a future `hook_command()`/
+`mcp_server_command()` change, or gets typo'd by whoever deploys it by hand.
+
+Three additions, all admin-facing (same "admin action, run locally, never
+automated" split `server/agents_admin.py` already draws for installation
+credentials - see §12), none of them touching `core/`, `server/`, or any
+employee-facing `install` behavior:
+
+1. **`connector/src/pabel_connector/managed_settings.py`** - `generate_
+   managed_settings()`/`generate_managed_mcp()`, built from
+   `installers.base.hook_command()`/`mcp_server_command()` and
+   `installers.claude_code.HOOK_KEYS` directly (the same calls `install()`
+   itself makes), so the managed-layer JSON can't silently drift from what
+   the hook/MCP registration actually expect after some future change to
+   either. `python_path` defaults to `sys.executable` (this interpreter) but
+   that's explicitly documented as wrong for a real fleet deployment - a
+   managed-settings.json needs one fixed, machine-wide interpreter path every
+   managed device actually has, not a single developer's own venv path
+   (`base.hook_command()`'s own docstring already made this distinction for
+   the single-machine `install()` case; this generator just makes the same
+   caveat apply to the fleet case explicitly, via a required-in-practice
+   `--python-path`).
+2. **`pabel-connector generate-managed-settings`** (new CLI subcommand,
+   `cli/main.py`) - writes `managed-settings.json`/`managed-mcp.json` to
+   `--out-dir`. Prints a loud warning if `--python-path` is omitted (defaults
+   to previewing the shape with this interpreter's own path, not something to
+   actually ship). Deploys nothing itself - no registry write, no `Program
+   Files` write - deliberately: this command can run on any machine with
+   `pabel-connector` installed, not necessarily the one being managed, and
+   writing to `HKLM`/`Program Files` needs elevation this command has no
+   business requesting on its own.
+3. **`connector/deploy/Deploy-ManagedSettings.ps1`** - the actual deployment
+   step, run separately and manually, as Administrator, on the machine being
+   managed. Refuses to run without admin rights (checked explicitly, not left
+   to fail opaquely on the first privileged write). Re-validates both JSON
+   files with `ConvertFrom-Json` before writing anything - malformed JSON is
+   `managed-settings.md`'s own "the one failure mode that matters most"
+   (Claude Code silently falls back to user/project settings with no visible
+   error), so this script fails loudly before deploying anything malformed
+   rather than after. `-Mode Registry`/`-Mode File` picks where
+   `managed-settings.json` goes; `managed-mcp.json` always goes to `C:\Program
+   Files\ClaudeCode\managed-mcp.json` regardless of `-Mode` - it has no
+   registry-delivery channel at all (confirmed in §19.1's addendum, restated
+   in the script's own header so this isn't only documented in one place).
+   Supports `-WhatIf`/`SupportsShouldProcess` for the same reason every other
+   admin-facing action in this project prefers a dry-run/preview path before a
+   hard-to-reverse machine-wide write.
+
+`managed-settings.md` updated to point at the generator instead of asking an
+admin to hand-copy JSON, with the JSON blocks kept (marked "shown here for
+reference") rather than removed - useful to see what the tool produces without
+running it. `connector/README.md`'s "Known open items" section updated with
+one line pointing at both new pieces. Verified end-to-end (not just unit
+tests): ran `generate-managed-settings` with an explicit `--python-path`,
+confirmed the two output files match the JSON already shown in
+`managed-settings.md` exactly, byte for byte in shape; syntax-checked
+`Deploy-ManagedSettings.ps1` via `[System.Management.Automation.Language.
+Parser]::ParseFile` (no errors) - actually running it needs Administrator
+rights and a real managed machine, out of scope to execute from an assistant
+session, consistent with this project's standing rule that machine-wide,
+hard-to-reverse actions are handed to the user to run themselves, not
+automated. 128 pre-existing tests plus 9 new ones (`test_managed_settings.py`,
+`test_cli_generate_managed_settings.py`) - 137 total, all passing.
