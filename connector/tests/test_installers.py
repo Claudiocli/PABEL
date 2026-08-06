@@ -238,6 +238,43 @@ def test_codex_cli_uninstall_removes_only_its_own_entry(tmp_path, monkeypatch):
     assert "pabel" in servers  # uninstall never touches the shared deployed-server entry
 
 
+def _codex_skill_path(tmp_path):
+    return tmp_path / ".agents" / "skills" / "pabel" / "SKILL.md"
+
+
+def test_codex_cli_install_writes_the_shared_skill_to_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    INSTALLERS["codex-cli"].install(tmp_path, global_=True)
+    text = _codex_skill_path(tmp_path).read_text()
+    assert "name: pabel" in text
+    # Content must differ from Claude Code's: no hook exists here, so the
+    # skill has to tell the model to call read_document itself.
+    assert "call `read_document` yourself" in text
+
+
+def test_chatgpt_desktop_install_writes_the_identical_shared_skill(tmp_path, monkeypatch):
+    # One skill for this package, not one per product - installing either
+    # product writes the exact same file to the exact same shared location.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("PABEL_SERVER_URL", "http://localhost:8001/mcp")
+    INSTALLERS["codex-cli"].install(tmp_path, global_=True)
+    after_codex_cli = _codex_skill_path(tmp_path).read_text()
+    INSTALLERS["chatgpt-desktop"].install(tmp_path, global_=True)
+    after_chatgpt_desktop = _codex_skill_path(tmp_path).read_text()
+    assert after_codex_cli == after_chatgpt_desktop
+
+
+def test_codex_family_uninstall_does_not_remove_the_shared_skill_file(tmp_path, monkeypatch):
+    # The skill is shared by both products (unlike each one's own MCP server
+    # entry) - uninstalling just one must not pull it out from under the
+    # other still-installed product.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    INSTALLERS["codex-cli"].install(tmp_path, global_=True)
+    INSTALLERS["chatgpt-desktop"].install(tmp_path, global_=True)
+    INSTALLERS["codex-cli"].uninstall(tmp_path, global_=True)
+    assert _codex_skill_path(tmp_path).exists()
+
+
 def test_chatgpt_desktop_status_is_mcp_only(tmp_path):
     assert INSTALLERS["chatgpt-desktop"].status == "mcp-only"
 

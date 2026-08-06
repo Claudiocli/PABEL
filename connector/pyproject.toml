@@ -25,4 +25,4 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-pabel_connector = ["skills/pabel/SKILL.md"]
+pabel_connector = ["skills/pabel/SKILL.md", "skills/pabel-codex/SKILL.md"]

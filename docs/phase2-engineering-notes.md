@@ -2422,3 +2422,95 @@ environment leak that stays invisible until the suite runs on a
 differently-configured machine (or, as here, is caught by noticing the
 live bug and then checking whether the tests could have caught it, and
 finding they couldn't have).
+
+## 23. Reconciling phase6 with phase7, and a Codex CLI/ChatGPT desktop Skill (2026-08-06, later session)
+
+Two separate pieces of work, done together because the second depended on
+the first being settled first: merging the still-unmerged
+`phase6-managed-settings-skill-materialize` branch forward against `main`
+(which had since gained phase7's Codex CLI/ChatGPT desktop MCP work and the
+Gemini CLI removal), then adding a Codex CLI/ChatGPT desktop Skill on top of
+the now-reconciled branch so both could ship in one merge to `main`.
+
+**23.1 The merge itself.** `git merge main` into phase6 produced only two
+real conflicts - `connector/README.md`'s "Known open items" and
+`docs/phase2-engineering-notes.md`'s own append-only log - both prose,
+resolved by keeping both sides' content rather than picking one. Everything
+else (the `gemini_cli.py` deletion, `codex_family.py`/`chatgpt_desktop.py`
+addition, `registry.py` entries) auto-merged cleanly: the two branches had
+touched disjoint areas of the same files. The log conflict needed more than
+a textual merge - both branches had independently written a "## 19." section
+(and phase6 already had a "## 20." of its own), so phase7's two sections
+were renumbered §19→§21 and §20→§22 to keep the sequence unbroken, with
+every internal cross-reference (§19.x/§20.x) inside them updated to match.
+146 connector tests + 9 server tests pass post-merge, run separately (a
+combined `pytest connector server` invocation fails - both trees have their
+own `tests/__init__.py`, so pytest's default import mode collides on the
+shared package name `tests` when given both as roots in one invocation; not
+a regression from this merge, just never previously attempted).
+
+**23.2 The Skill, reversing part of §21.10 - deliberately, not by accident.**
+§21.10 above recorded an explicit decision *against* shipping an `AGENTS.md`
+nudge file for Codex CLI/ChatGPT desktop, reasoning that a disclaimer-laden
+nudge wasn't worth the engineering surface of building a new mechanism for
+it. Re-litigated this session at the user's own request (not this package's
+initiative) after confirming, via primary sources - `developers.openai.com/
+codex/skills` (redirects to `learn.chatgpt.com/docs/build-skills`) - a fact
+that didn't hold in phase7: **Agent Skills are now a real, open, cross-vendor
+standard** (agentskills.io), and "Standalone skills are available in the
+ChatGPT desktop app, Codex CLI, and IDE extension" using the exact same
+`SKILL.md` shape (frontmatter `name`/`description`, then markdown) this
+package already built and ships for Claude Code
+(`installers/claude_code.py`). Confirmed exact paths, not guessed: repo scope
+at `$CWD/.agents/skills/` (and `$REPO_ROOT/.agents/skills/` for a nested
+subfolder), user scope at `$HOME/.agents/skills/`, admin scope at
+`/etc/codex/skills`, plus a bundled system scope - the same fetch also
+corrected an initial WebSearch-summarized guess of `~/.codex/skills/`/
+`.codex/skills/` from third-party blog posts, re-confirming this project's
+standing rule of trusting a primary-source fetch over an aggregated summary
+when the two disagree.
+
+This changes the §21.10 calculus, not the honesty of its conclusion: a
+`SKILL.md` for these two products isn't a new mechanism to build and
+maintain - it's a second, differently-worded copy of a file this package
+already has, installed to a location both products already read natively.
+Nothing about *why* a nudge can't be enforcement changed; what changed is
+that the nudge is now nearly free to ship. The user confirmed proceeding
+given this updated cost, rather than this package silently reversing its own
+prior recorded decision - asked directly rather than assumed.
+
+**23.3 What's actually different in the content, not just the file.** Naively
+copying Claude Code's `SKILL.md` would have been actively wrong: that file's
+central claim - "The actual security boundary is a `PreToolUse` hook that
+runs unconditionally on every tool call" - is false for Codex CLI/ChatGPT
+desktop, which have no hook at all (confirmed repeatedly since phase7,
+`docs/known-gaps.md`). `skills/pabel-codex/SKILL.md` is a distinct file
+(not a parameterized template) built around the opposite starting fact: a
+raw read of a gated file returns real, meaningless ciphertext here, silently
+- not a denial, not an interception, nothing to "read past." Its guidance is
+therefore "call `read_document` yourself" rather than "just read it
+normally, it's handled for you," and its closing section restates plainly
+that confidentiality depends on the CP-ABE ciphertext, never on any agent
+choosing to follow this file.
+
+**23.4 Wiring: one shared skill, in the module that already owns the shared
+file.** `installers/codex_family.py` gained `install_skill()` (mirroring
+`claude_code.py`'s `_install_skill`) rather than duplicating it in both
+`codex_cli.py` and `chatgpt_desktop.py` - same instinct that already put
+`install_mcp_registration`/`uninstall_mcp_registration` there instead of in
+each product's own module. Writes only the user-scoped location
+(`$HOME/.agents/skills/pabel/SKILL.md`), not the repo-scoped one that's also
+available - matching `GLOBAL_ONLY` on both callers, so a product doesn't end
+up with some artifacts per-project and others not. Both `codex_cli.py` and
+`chatgpt_desktop.py`'s `install()` call it alongside
+`install_mcp_registration()`; installing either product after the other
+overwrites the file with byte-identical content (one skill for this package,
+not one per product) - confirmed by a test that installs both in sequence
+and diffs the result. **Uninstall deliberately does not remove it**, on
+either product: unlike Claude Code's skill (genuinely per-installation),
+this one is shared, so `codex-cli uninstall` deleting it out from under a
+still-installed `chatgpt-desktop` would be a real regression, the same
+reasoning that already keeps the shared "pabel" deployed-server `config.toml`
+entry untouched by either product's uninstall. `pyproject.toml`'s
+package-data gained the new file's path (`skills/pabel-codex/SKILL.md`)
+alongside the existing Claude Code one. 3 new tests, 149 total, all passing.
