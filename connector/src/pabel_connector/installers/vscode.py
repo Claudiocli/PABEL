@@ -40,7 +40,7 @@ Also registers mcp_local_server.py as a direct MCP server in
 customization/mcp-servers) - whoami/read_document/login become directly
 callable tools, not just something the hook relays reactively.
 
-**No `--global` support** (unlike claude-code/cursor/gemini-cli/windsurf/
+**No `--global` support** (unlike claude-code/cursor/windsurf/
 copilot-cli): a 2026-08 doc search found no confirmed user-profile-level
 file for VS Code's *native agent hooks* specifically - only the
 workspace-scoped `.github/hooks/*.json` above. VS Code's "Agent Plugins"

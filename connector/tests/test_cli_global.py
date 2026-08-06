@@ -38,3 +38,38 @@ def test_uninstall_global_rejected_for_unsupported_agent(tmp_path, capsys):
     exit_code = main(["uninstall", "vscode", "--dir", str(tmp_path), "--global"])
     assert exit_code == 2
     assert "no confirmed global" in capsys.readouterr().err
+
+
+def test_install_rejected_for_global_only_agent_without_global_flag(tmp_path, capsys):
+    # codex-cli/chatgpt-desktop share one file with no project-scoped
+    # variant at all - the inverse of vscode's rejection above (missing
+    # --global, not an unsupported one).
+    exit_code = main(["install", "codex-cli", "--dir", str(tmp_path),
+                      "--client-id", "x", "--client-secret", "y"])
+    assert exit_code == 2
+    assert "no project-scoped install" in capsys.readouterr().err
+    assert not (tmp_path / ".codex").exists()
+
+
+def test_install_and_uninstall_global_only_agent_via_cli(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(main_module.agent_session, "store_credentials", lambda *a, **k: None)
+    monkeypatch.setenv("PABEL_SERVER_URL", "http://localhost:8001/mcp")
+    exit_code = main([
+        "install", "codex-cli", "--dir", str(tmp_path / "some-project"), "--global",
+        "--client-id", "test-client", "--client-secret", "test-secret",
+    ])
+    assert exit_code == 0
+    assert (tmp_path / ".codex" / "config.toml").exists()
+
+    exit_code = main(["uninstall", "codex-cli", "--dir", str(tmp_path / "some-project"), "--global"])
+    assert exit_code == 0
+    import tomlkit
+    data = tomlkit.parse((tmp_path / ".codex" / "config.toml").read_text(encoding="utf-8"))
+    assert "pabel-connector-codex-cli" not in data["mcp_servers"]
+
+
+def test_uninstall_rejected_for_global_only_agent_without_global_flag(tmp_path, capsys):
+    exit_code = main(["uninstall", "codex-cli", "--dir", str(tmp_path)])
+    assert exit_code == 2
+    assert "no project-scoped install" in capsys.readouterr().err
