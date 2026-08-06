@@ -28,18 +28,34 @@ STATUS_LABELS = {
     "unverified": "UNVERIFIED - built to vendor docs, not yet tried against a real install",
     "degraded": "DEGRADED - real vendor limitation, partial coverage only",
     "gap": "NO ADAPTER - documented gap, see docs/known-gaps.md",
+    "mcp-only": "MCP TOOLS ONLY - no hook, no enforcement (see docs/known-gaps.md)",
 }
 
 
 def cmd_list(_args) -> int:
     for key, installer in sorted(INSTALLERS.items()):
-        global_note = " [supports --global]" if _supports_global(installer) else ""
+        if _global_only(installer):
+            global_note = " [global only]"
+        elif _supports_global(installer):
+            global_note = " [supports --global]"
+        else:
+            global_note = ""
         print(f"{key:15s} {STATUS_LABELS.get(installer.status, installer.status)}{global_note}")
     return 0
 
 
 def _supports_global(installer) -> bool:
     return hasattr(installer, "GLOBAL_CONFIG_RELATIVE_PATH")
+
+
+def _global_only(installer) -> bool:
+    """True for codex-cli/chatgpt-desktop: both write into the one shared
+    ~/.codex/config.toml Codex CLI and the ChatGPT desktop app both read
+    (see installers/codex_family.py) - there is no meaningful per-project
+    variant to fall back to, unlike every hook-based installer. cmd_install/
+    cmd_uninstall reject a call without --global instead of silently
+    writing to a --dir path neither product would ever look at."""
+    return getattr(installer, "GLOBAL_ONLY", False)
 
 
 def cmd_install(args) -> int:
@@ -54,6 +70,12 @@ def cmd_install(args) -> int:
             f"location - install per-project with --dir instead of --global. See "
             f"connector/docs/coverage-matrix.md for why (not guessed, so not offered "
             f"here rather than risk writing to a path nothing reads).\n")
+        return 2
+    if _global_only(installer) and not args.global_:
+        sys.stderr.write(
+            f"pabel-connector: {args.agent!r} has no project-scoped install - it always "
+            f"writes to the single shared ~/.codex/config.toml Codex CLI and the ChatGPT "
+            f"desktop app both read (see installers/codex_family.py) - use --global.\n")
         return 2
     base_dir = Path(args.dir).resolve()
     print(installer.install(base_dir, global_=args.global_) if args.global_
@@ -97,6 +119,18 @@ def cmd_uninstall(args) -> int:
         sys.stderr.write(f"pabel-connector: {args.agent!r} has no confirmed global/user-level "
                           f"hook location - nothing to uninstall with --global.\n")
         return 2
+    if _global_only(installer) and not args.global_:
+        sys.stderr.write(
+            f"pabel-connector: {args.agent!r} has no project-scoped install - it always "
+            f"writes to the single shared ~/.codex/config.toml Codex CLI and the ChatGPT "
+            f"desktop app both read (see installers/codex_family.py) - use --global.\n")
+        return 2
+    if hasattr(installer, "uninstall"):
+        # codex-cli/chatgpt-desktop: TOML, not JSON - their own uninstall()
+        # knows how to remove just their own entry from the shared file
+        # without teaching this generic path about TOML at all.
+        print(installer.uninstall(Path(args.dir).resolve(), global_=args.global_))
+        return 0
     path = (base.global_config_path(installer.GLOBAL_CONFIG_RELATIVE_PATH) if args.global_
             else installer.config_path(Path(args.dir).resolve()))
     data = base.read_json(path)
@@ -134,11 +168,15 @@ def _hook_wiring_ok(agent_id: str, base_dir: Path) -> "str | None":
     project directory) with nothing else ever surfacing that; doctor is
     where it should be loud instead of silent. Returns a one-line problem
     description otherwise; installers with no config file at all (the
-    documented-gap agents - cline, continue-dev) are skipped, not flagged."""
+    documented-gap agents - cline, continue-dev) are skipped, not flagged.
+    Also skipped: installers with a config_path but no HOOK_KEYS at all
+    (codex-cli, chatgpt-desktop) - neither has any hook/interception
+    mechanism to check, only MCP tool registration; without this guard,
+    the HOOK_KEYS lookup below would raise AttributeError instead."""
     installer = INSTALLERS.get(agent_id)
     if installer is None:
         return f"no installer registered for {agent_id!r} - can't check its hook wiring"
-    if not hasattr(installer, "config_path"):
+    if not hasattr(installer, "config_path") or not hasattr(installer, "HOOK_KEYS"):
         return None  # e.g. claude-code: no config file of its own to check
     path = installer.config_path(base_dir)
     data = base.read_json(path)

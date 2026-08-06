@@ -34,8 +34,8 @@ sends it to the server."
 | GitHub Copilot CLI | UNVERIFIED | Yes | Not yet wired | Path confirmed against current docs; `additionalContext` unreliable per open vendor issues (#2585/#2980) - content folded into the deny reason instead. |
 | Cursor | UNVERIFIED | Yes | Not yet wired | 3 hook points (read/shell/MCP); response fields confirmed snake_case. No pre-write-block hook exists (low-impact - `core/decide.py`'s `DENY_MUTATING` covers writes regardless). |
 | Windsurf/Cascade | **DEGRADED** | Yes (different shape: `~/.codeium/windsurf/`, not `~/.windsurf/`) | Not yet wired | Blocking is confirmed exit-code-2-plus-stderr only, reaching a human-visible log, never the model's context - a real vendor ceiling, not just unverified. |
-| Gemini CLI | UNVERIFIED | Yes | Not yet wired | Catch-all `BeforeTool` matcher; content folded into the deny reason. |
-| OpenAI Codex CLI | **NO ADAPTER** | N/A | N/A | Hooks documented as unavailable on Windows at all. See `docs/known-gaps.md`. |
+| OpenAI Codex CLI | **MCP TOOLS ONLY** | Yes (`--global` only - no project-scoped variant) | Yes | No hook/interception mechanism confirmed to exist for this product at all - registers `whoami`/`read_document`/`materialize_document` in `~/.codex/config.toml`, **zero enforcement**. Shares that file with ChatGPT Desktop below. See `docs/known-gaps.md`. |
+| ChatGPT desktop app | **MCP TOOLS ONLY** | Yes (`--global` only) | Yes | Same file, same limitation, as Codex CLI above - confirmed via OpenAI's own docs that both products read `~/.codex/config.toml`. See `docs/known-gaps.md`. |
 | Cline | **NO ADAPTER** | N/A | N/A | Hooks are Windows-unsupported today. See `docs/known-gaps.md`. |
 | Continue.dev | **NO ADAPTER** | N/A | N/A | No pre-tool-use hook primitive exists. See `docs/known-gaps.md`. |
 
@@ -44,7 +44,9 @@ beyond Claude Code/VS Code in a real rollout** - "built to spec" is not the
 same claim as "confirmed against the real agent." "Direct MCP tools" means
 `mcp_local_server.py`'s whoami/read_document/login are registered as
 directly callable tools for that agent, independent of the hook - not yet
-done for Cursor/Windsurf/Gemini CLI/Copilot CLI, tracked as an open item.
+done for Cursor/Windsurf/Copilot CLI, tracked as an open item. Gemini CLI
+support was removed entirely (deprecated by its own vendor's successor
+product, "Antigravity" - deliberately not supported either).
 
 ## Install
 
@@ -142,7 +144,7 @@ UNVERIFIED.
 
 ## Known open items
 
-See `docs/known-gaps.md` for Cline/Continue.dev/Codex CLI, and
+See `docs/known-gaps.md` for Cline/Continue.dev/Codex CLI/ChatGPT desktop, and
 `docs/coverage-matrix.md` for exactly what's confirmed vs. assumed for
 every other adapter. In short: Claude Code and VS Code have both been
 tried against a real, live install and work end-to-end; every other
@@ -150,7 +152,7 @@ adapter's path/schema has at least been re-checked against current
 official docs (a live VS Code attempt originally found its first guess was
 simply wrong, which prompted re-verifying all of them; several other real
 bugs turned up and are already fixed - see coverage-matrix.md), but none of
-Cursor/Windsurf/Gemini CLI/Copilot CLI has been exercised end-to-end
+Cursor/Windsurf/Copilot CLI has been exercised end-to-end
 against a real agent session yet, and none of them has `mcp_local_server.py`
 wired in as directly-callable tools yet either (Claude Code and VS Code
 only, so far). Windsurf is structurally limited (confirmed no channel to

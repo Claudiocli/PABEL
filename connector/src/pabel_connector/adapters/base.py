@@ -32,7 +32,7 @@ class Adapter(Protocol):
 
 def fold_content_into_reason(decision: Decision) -> str:
     """decision.reason, with decision.content (if present) appended as
-    readable text - the shared fallback body for copilot_cli/gemini_cli/
+    readable text - the shared fallback body for copilot_cli/
     windsurf (whose vendor doesn't reliably deliver, or doesn't have at
     all, a separate additionalContext-style channel for a blocked
     PreToolUse call) and cursor (whose agent_message IS its only channel,

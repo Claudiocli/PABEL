@@ -16,12 +16,14 @@ docs/coverage-matrix.md for the full picture and sources. Only
 other entry is built from vendor documentation only.
 """
 
-from .adapters import claude_code, copilot_cli, cursor, gemini_cli, vscode, windsurf
+from .adapters import claude_code, copilot_cli, cursor, vscode, windsurf
 
-# codex-cli has no entry here (like cline/continue-dev in installers/registry.py) -
-# its hooks feature is documented as not available on Windows at all, the same
-# blocking criterion already applied to Cline; see installers/codex_cli.py and
-# docs/known-gaps.md.
+# codex-cli/chatgpt-desktop have no entry here (like cline/continue-dev in
+# installers/registry.py) - neither product has any confirmed hook/tool-
+# interception mechanism at all (Codex CLI's own hooks are additionally
+# documented as unavailable on Windows), so there's nothing for decide() to
+# dispatch to; both still get a real installers/registry.py entry for MCP
+# tool registration. See installers/codex_family.py and docs/known-gaps.md.
 ADAPTERS = {
     "claude-code": claude_code,                                    # VERIFIED
     "vscode": vscode,                                              # UNVERIFIED
@@ -33,5 +35,4 @@ ADAPTERS = {
     "windsurf:pre_write_code": windsurf.pre_write_code,             # DEGRADED
     "windsurf:pre_run_command": windsurf.pre_run_command,          # DEGRADED
     "windsurf:pre_mcp_tool_use": windsurf.pre_mcp_tool_use,         # DEGRADED
-    "gemini-cli": gemini_cli,                                      # UNVERIFIED
 }

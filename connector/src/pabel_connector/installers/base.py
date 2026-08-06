@@ -28,6 +28,8 @@ import sys
 from pathlib import Path
 from typing import List, Protocol
 
+import tomlkit
+
 SHARED_ENV_VARS = [
     "PABEL_KEYCLOAK_URL",
     "PABEL_KEYCLOAK_REALM",
@@ -53,11 +55,16 @@ class Installer(Protocol):
     """Not every attribute/method here is present on every installer - this
     documents the common shape, not an enforced interface (nothing in this
     package actually type-checks against it):
-      - The three documented-gap installers (cline, continue_dev,
-        codex_cli) have no `config_path`/`HOOK_KEYS`/`GLOBAL_CONFIG_
-        RELATIVE_PATH` at all - `install()` just explains why and writes
-        nothing (see cli/main.py's `hasattr(installer, "config_path")`
-        checks).
+      - The two documented-gap installers (cline, continue_dev) have no
+        `config_path`/`HOOK_KEYS`/`GLOBAL_CONFIG_RELATIVE_PATH` at all -
+        `install()` just explains why and writes nothing (see cli/main.py's
+        `hasattr(installer, "config_path")` checks).
+      - codex_cli/chatgpt_desktop have a `config_path` (both point at the
+        same shared `~/.codex/config.toml` - see installers/codex_family.py)
+        but no `HOOK_KEYS` at all: neither product has any hook/interception
+        mechanism, only MCP tool registration - cli/main.py's
+        `_hook_wiring_ok` skips them for exactly this reason rather than
+        crashing on a `HOOK_KEYS` that doesn't exist.
       - `GLOBAL_CONFIG_RELATIVE_PATH` only exists on installers with a
         confirmed user-level location (see global_config_path()'s
         docstring) - `install()`'s `global_` parameter is meaningless
@@ -125,8 +132,8 @@ def global_config_path(relative_path: Path) -> Path:
     installers whose confirmed global/user-level hook location is simply
     "the same relative path, rooted at the user's home directory instead
     of a project" (Claude Code's `~/.claude/settings.json`, Cursor's
-    `~/.cursor/hooks.json`, Gemini CLI's `~/.gemini/settings.json` - all
-    confirmed 2026-08 against real vendor docs, not guessed). Installers
+    `~/.cursor/hooks.json` - both confirmed 2026-08 against real vendor
+    docs, not guessed). Installers
     whose global location has a genuinely different shape (Windsurf's
     `~/.codeium/windsurf/hooks.json`, Copilot CLI's `~/.copilot/hooks/`
     directory) compute their own path instead of using this helper;
@@ -147,6 +154,26 @@ def read_json(path: Path) -> dict:
 def write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def read_toml(path: Path):
+    """TOML equivalent of read_json(), for installers/codex_family.py - the
+    only consumer today (Codex CLI/ChatGPT Desktop's shared
+    `~/.codex/config.toml`). Uses tomlkit rather than the stdlib's
+    read-only `tomllib` specifically because it round-trips: a real
+    config.toml an employee already hand-edited (other MCP servers, model
+    settings, comments) must survive an install()/uninstall() pass
+    unchanged apart from the pabel entries themselves, the same
+    merge-not-clobber discipline read_json()/write_json() already give
+    every JSON-based installer."""
+    if not path.exists():
+        return tomlkit.document()
+    return tomlkit.parse(path.read_text(encoding="utf-8"))
+
+
+def write_toml(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(tomlkit.dumps(data), encoding="utf-8")
 
 
 def remove_matching_commands(node, commands) -> bool:
