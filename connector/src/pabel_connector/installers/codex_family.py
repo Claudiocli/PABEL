@@ -41,6 +41,23 @@ auth token specifically - a different mechanism). Absent that confirmation,
 this reads the real value from the installing shell's own environment at
 install time and bakes it in - if the deployed server's URL ever changes,
 re-run install to pick it up, rather than silently going stale.
+
+All four of `base.SHARED_ENV_VARS` (`PABEL_KEYCLOAK_URL`/`_REALM`/
+`_CLIENT_ID`, `PABEL_SERVER_URL`) are captured the same way, straight into
+the connector server's own `[mcp_servers.<name>.env]` table - confirmed
+real, real syntax (`config.toml`'s own docs show exactly this shape for a
+stdio server's env vars). This is not just a convenience: `relay.py`/
+`keycloak_client.py` read these from `os.environ` *inside the
+`mcp_local_server.py` subprocess Codex CLI/ChatGPT desktop spawn* - not from
+whatever shell happened to run `pabel-connector install`, and not from
+whatever the OS's persistent user/system environment says either, since a
+GUI app already running when a persistent variable changes keeps its own
+stale environment snapshot until fully restarted (confirmed live 2026-08:
+an employee had all four set correctly and persistently, but ChatGPT
+desktop/Codex CLI had already been running since before that, so neither
+picked up the change without a full restart - a real, repeatable point of
+confusion this closes entirely by making config.toml itself the only
+source of truth these two products' own tool subprocess ever needs).
 """
 
 import os
@@ -71,27 +88,48 @@ def install_mcp_registration(agent_id: str, connector_server_name: str) -> str:
     data = base.read_toml(path)
     servers = data.setdefault("mcp_servers", tomlkit.table())
     command, *args = base.mcp_server_command(agent_id)
-    servers[connector_server_name] = {"command": command, "args": args}
 
-    server_url = os.environ.get("PABEL_SERVER_URL")
+    # Captured from THIS process's own environment (the shell running
+    # `pabel-connector install`), then written into the connector server's
+    # own [env] table - not left for the OS-level environment to supply
+    # later, which is exactly what broke live (see this module's docstring).
+    captured = {name: os.environ[name] for name in base.SHARED_ENV_VARS if os.environ.get(name)}
+    missing = [name for name in base.SHARED_ENV_VARS if name not in captured]
+    entry = {"command": command, "args": args}
+    if captured:
+        entry["env"] = captured
+    servers[connector_server_name] = entry
+
+    server_url = captured.get("PABEL_SERVER_URL")
     if server_url:
         servers[DEPLOYED_SERVER_NAME] = {"url": server_url}
-        url_note = ""
-    else:
-        url_note = (
-            f"\n[!!] PABEL_SERVER_URL is not set in this shell - the deployed "
-            f"'{DEPLOYED_SERVER_NAME}' server was NOT registered (config.toml has no "
-            f"confirmed variable-expansion syntax for a server url, so the real value "
-            f"must be known at install time - see this module's docstring). Set "
-            f"PABEL_SERVER_URL and re-run install to add it, or add it yourself:\n"
-            f"  [mcp_servers.{DEPLOYED_SERVER_NAME}]\n  url = \"<the real deployed server URL>\""
+
+    if missing:
+        env_note = (
+            f"\n[!!] Not set in this shell, so not captured: {', '.join(missing)}. "
+            f"pabel-connector's own tools need every one of these to actually run "
+            f"(see pabel_client/relay.py, keycloak_client.py) - set them and re-run "
+            f"install to add them to \"{connector_server_name}\"'s own [env] block."
+            + (f" The deployed '{DEPLOYED_SERVER_NAME}' server entry was also skipped, "
+               f"same reason (config.toml has no confirmed ${{VAR}}-expansion for a "
+               f"server url - see this module's docstring)."
+               if "PABEL_SERVER_URL" in missing else "")
         )
+    else:
+        env_note = ""
 
     base.write_toml(path, data)
+    captured_note = (f"with {', '.join(captured)} captured directly into its own "
+                     f"[env] block" if captured else "with no env vars captured (none "
+                     f"were set in this shell)")
     return (
         f"Registered pabel-connector's whoami/read_document/materialize_document tools "
         f"as \"{connector_server_name}\" in {path} (shared with every other Codex "
-        f"CLI/ChatGPT Desktop MCP config on this machine).{url_note}\n"
+        f"CLI/ChatGPT Desktop MCP config on this machine), {captured_note} - Codex "
+        f"CLI/ChatGPT desktop inject these straight into the tool's own subprocess, so "
+        f"nothing needs to be set in your own shell or Windows environment for this to "
+        f"work, and no app restart is needed for a *new* install to take effect (only "
+        f"for updating an already-running one - see 'Env vars' above).{env_note}\n"
         f"No enforcement exists for this product - no hook/interception mechanism is "
         f"confirmed to exist here at all. These tools must be called explicitly; a "
         f"direct read of an encrypted document is never blocked or substituted "

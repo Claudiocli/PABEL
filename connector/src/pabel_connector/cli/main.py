@@ -80,10 +80,19 @@ def cmd_install(args) -> int:
     base_dir = Path(args.dir).resolve()
     print(installer.install(base_dir, global_=args.global_) if args.global_
           else installer.install(base_dir))
-    env_needed = base.SHARED_ENV_VARS + installer.required_env()
-    print("\nEnv vars needed (ask your admin for the deployed values):")
-    for var in env_needed:
-        print(f"  {var}")
+    if _global_only(installer):
+        # codex-cli/chatgpt-desktop capture SHARED_ENV_VARS straight into
+        # their own config.toml [env] block at install time (see
+        # installers/codex_family.py) - printing "you still need to set
+        # these" here would be actively wrong, not just redundant: install()'s
+        # own returned message above already says exactly what was captured
+        # and what wasn't.
+        pass
+    else:
+        env_needed = base.SHARED_ENV_VARS + installer.required_env()
+        print("\nEnv vars needed (ask your admin for the deployed values):")
+        for var in env_needed:
+            print(f"  {var}")
 
     # This installation's own agent credential - never self-generated here:
     # an admin already created it (server/agents_admin.py create-installation)

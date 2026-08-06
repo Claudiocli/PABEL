@@ -1,8 +1,22 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from pabel_connector.installers import base
 from pabel_connector.installers.registry import INSTALLERS
+
+
+@pytest.fixture(autouse=True)
+def _clean_pabel_env(monkeypatch):
+    # installers/codex_family.py reads base.SHARED_ENV_VARS from os.environ
+    # at install time - without this, tests here would silently pick up
+    # whatever real PABEL_* values happen to be set persistently on the
+    # machine actually running the suite (confirmed to happen in real use -
+    # see docs/phase2-engineering-notes.md), making pass/fail depend on the
+    # runner's own machine instead of what each test explicitly sets.
+    for var in base.SHARED_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
 
 
 def test_merge_hook_list_is_idempotent():
@@ -148,14 +162,49 @@ def test_codex_cli_install_registers_its_own_mcp_server(tmp_path, monkeypatch):
     assert servers["pabel"]["url"] == "http://localhost:8001/mcp"
 
 
+def test_codex_cli_install_captures_all_shared_env_vars_into_own_env_block(tmp_path, monkeypatch):
+    # relay.py/keycloak_client.py read these from os.environ *inside the
+    # mcp_local_server.py subprocess Codex CLI spawns* - captured here so
+    # nothing needs to be set in the user's own shell or the OS's
+    # persistent environment for the tools to actually work (found live
+    # 2026-08 - see docs/phase2-engineering-notes.md).
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("PABEL_KEYCLOAK_URL", "http://localhost:8080")
+    monkeypatch.setenv("PABEL_KEYCLOAK_REALM", "pabel")
+    monkeypatch.setenv("PABEL_KEYCLOAK_CLIENT_ID", "pabel")
+    monkeypatch.setenv("PABEL_SERVER_URL", "http://localhost:8001/mcp")
+    INSTALLERS["codex-cli"].install(tmp_path, global_=True)
+    env = _codex_home_toml(tmp_path)["mcp_servers"]["pabel-connector-codex-cli"]["env"]
+    assert dict(env) == {
+        "PABEL_KEYCLOAK_URL": "http://localhost:8080",
+        "PABEL_KEYCLOAK_REALM": "pabel",
+        "PABEL_KEYCLOAK_CLIENT_ID": "pabel",
+        "PABEL_SERVER_URL": "http://localhost:8001/mcp",
+    }
+
+
 def test_codex_cli_install_without_server_url_warns_and_skips_pabel_entry(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.delenv("PABEL_SERVER_URL", raising=False)
     message = INSTALLERS["codex-cli"].install(tmp_path, global_=True)
-    assert "PABEL_SERVER_URL is not set" in message
+    assert "Not set in this shell, so not captured" in message
+    assert "PABEL_SERVER_URL" in message
     data = _codex_home_toml(tmp_path)
     assert "pabel" not in data["mcp_servers"]
     assert "pabel-connector-codex-cli" in data["mcp_servers"]
+    assert "env" not in data["mcp_servers"]["pabel-connector-codex-cli"]
+
+
+def test_codex_cli_install_captures_only_the_env_vars_that_are_set(tmp_path, monkeypatch):
+    # Partial capture: some set, some not - the ones present still get
+    # written, missing ones are named in the warning, not a hard failure.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("PABEL_KEYCLOAK_URL", "http://localhost:8080")
+    message = INSTALLERS["codex-cli"].install(tmp_path, global_=True)
+    assert "PABEL_KEYCLOAK_REALM" in message
+    assert "PABEL_KEYCLOAK_CLIENT_ID" in message
+    assert "PABEL_SERVER_URL" in message
+    env = _codex_home_toml(tmp_path)["mcp_servers"]["pabel-connector-codex-cli"]["env"]
+    assert dict(env) == {"PABEL_KEYCLOAK_URL": "http://localhost:8080"}
 
 
 def test_codex_family_shared_file_does_not_collide(tmp_path, monkeypatch):

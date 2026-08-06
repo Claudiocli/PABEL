@@ -2107,3 +2107,61 @@ documentation-only over also shipping an `AGENTS.md` nudge file, on the
 grounds that a nudge with an explicit "this is not enforcement" disclaimer
 adds engineering surface for a benefit the disclaimer itself says not to
 rely on.
+
+## 20. A real, live install found a real, live environment-variable bug (2026-08-06, later session)
+
+Live-testing §19's work end-to-end (real Codex CLI + ChatGPT desktop
+installs, real Keycloak, real login) surfaced a genuine bug, not just a
+usability rough edge: `pabel-connector install codex-cli`/`chatgpt-desktop`
+only ever *printed* "Env vars needed" as a reminder - it never made those
+values reach the place that actually needs them, `mcp_local_server.py`'s
+own subprocess environment (`pabel_client/relay.py`/`keycloak_client.py`
+both read `PABEL_SERVER_URL`/`PABEL_KEYCLOAK_URL`/`_REALM`/`_CLIENT_ID`
+straight from `os.environ` at call time, inside that subprocess).
+
+**The failure mode, reproduced live**: the employee set all four values
+correctly and *persistently* (`[Environment]::SetEnvironmentVariable(...,
+"User")`, confirmed directly against the registry, not guessed) - and
+`login`/`read_document` still failed. Root cause: ChatGPT desktop and Codex
+CLI were already running when the persistent variables were set. A Windows
+process only reads its environment at its own startup; a persistent
+variable change doesn't retroactively reach an already-running process (or
+anything it spawns later) until that process restarts. This is a real,
+repeatable failure class for any GUI-app-hosted MCP subprocess, not
+specific to this employee's setup.
+
+**Fix, not a workaround**: `config.toml`'s own per-server `[mcp_servers.
+<name>.env]` block (confirmed real syntax, same source as §19.2) lets
+`install_mcp_registration()` (`installers/codex_family.py`) capture
+whichever of `base.SHARED_ENV_VARS` are present in the *installing shell's*
+environment and write them directly into that product's own MCP server
+entry - Codex CLI/ChatGPT desktop then inject them into the tool
+subprocess themselves, every time it's spawned, straight from the file.
+This removes the OS-level environment/app-restart failure class entirely
+for these two products: the values only ever need to be correct in the
+shell that runs `install` once, not anywhere else, ever again (until they
+change, at which point re-running `install` updates the file - same
+"bake it in, re-run to refresh" tradeoff already accepted for
+`PABEL_SERVER_URL` in §19.6, now applied to all four).
+
+Partial capture is graceful, not a hard failure: whichever variables are
+actually set get written; missing ones are named explicitly in the
+returned message rather than silently left out. `cli/main.py`'s generic
+post-install "Env vars needed" reminder (`cmd_install`) is now suppressed
+for these two specifically (`_global_only(installer)`) - printing it
+unconditionally would actively contradict what `install()` itself already
+reported having captured.
+
+**A second bug this surfaced, in the test suite itself**: none of
+`test_installers.py`'s codex-family tests isolated `os.environ` from the
+real machine running the suite - since these same four variables are set
+persistently on this development machine (the exact thing that caused the
+live bug above), several assertions were at risk of silently passing for
+the wrong reason (picking up this machine's real values instead of each
+test's own explicit `monkeypatch.setenv`/absence of one). Fixed with an
+autouse fixture at the top of `test_installers.py` that clears
+`base.SHARED_ENV_VARS` before every test in that file - the kind of
+environment leak that stays invisible until the suite runs on a
+differently-configured machine (or, as here, is caught by noticing the
+live bug and then checking whether the tests could have caught it, and
+finding they couldn't have).

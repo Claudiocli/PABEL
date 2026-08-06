@@ -97,7 +97,8 @@ not because the current directory affects where anything lands.
 ### Per-agent quickstart (copy-paste ready)
 
 Set these once per shell session first (PowerShell syntax - use `export`
-instead of `$env:...=` on macOS/Linux):
+instead of `$env:...=` on macOS/Linux) - **required in the shell that runs
+`install` itself, for every agent**:
 
 ```powershell
 $env:PABEL_KEYCLOAK_URL      = "<your deployment's value>"
@@ -105,6 +106,23 @@ $env:PABEL_KEYCLOAK_REALM    = "<your deployment's value>"
 $env:PABEL_KEYCLOAK_CLIENT_ID = "<your deployment's value>"
 $env:PABEL_SERVER_URL        = "<your deployment's value>"
 ```
+
+For Codex CLI/ChatGPT desktop specifically, that's also the **only** place
+these ever need to be set: `install` captures whichever of these four are
+present in this shell straight into that product's own `config.toml`
+entry (`[mcp_servers.<name>.env]`), which Codex CLI/ChatGPT desktop then
+inject into the tool's own subprocess directly - no OS-level/persistent
+environment variable, no shell profile edit, and no dependency on
+already-running-app-picks-up-a-later-change (a real, confirmed point of
+confusion this specifically avoids - persistent Windows env vars are only
+read by a process at *its own* startup, so an app already running when you
+set one keeps using its old environment until fully restarted; capturing
+into `config.toml` sidesteps that class of problem for these two agents
+entirely). Every other agent below still needs these set in whatever
+environment actually runs its hook subprocess (typically inherited from
+however you launch that agent, not something `pabel-connector install`
+can capture the same way, since their own hook config format doesn't
+support scoping this per-tool the way `config.toml` does).
 
 Then, per agent - `<client-id>`/`<client-secret>` come from your admin
 (`server/agents_admin.py create-installation <agent>`, see below):

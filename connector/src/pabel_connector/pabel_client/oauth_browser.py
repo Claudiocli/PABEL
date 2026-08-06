@@ -52,7 +52,7 @@ class _CallbackHandler(BaseHTTPRequestHandler):
         pass
 
 
-def _wait_for_callback(timeout):
+def _wait_for_callback(timeout, url):
     server = HTTPServer(("127.0.0.1", CALLBACK_PORT), _CallbackHandler)
     server.callback_result = None
     server.timeout = timeout
@@ -61,10 +61,20 @@ def _wait_for_callback(timeout):
     thread.join(timeout)
     server.server_close()
     if server.callback_result is None:
+        # webbrowser.open() only tells us a browser process was launched, not
+        # that it stayed up or ever reached Keycloak - a browser that crashes
+        # or gets closed after opening looks identical to this same timeout,
+        # so the manual URL has to be included here too, not just in the
+        # "couldn't launch a browser at all" case below - found live 2026-08
+        # when ChatGPT desktop's own bundled Chrome build crashed immediately
+        # after webbrowser.open() reported success, leaving no other way to
+        # recover the URL.
         raise AuthError(
-            "browser login timed out - the redirect back from Keycloak "
-            "was never received (login not completed in time, or "
-            f"nothing is listening on {REDIRECT_URI})")
+            "browser login timed out - the redirect back from Keycloak was "
+            "never received (login not completed in time, the browser "
+            "crashed/closed after opening, or nothing is listening on "
+            f"{REDIRECT_URI}). Open this URL yourself in a working browser "
+            f"to log in: {url}")
     return server.callback_result
 
 
@@ -82,7 +92,7 @@ def login_with_browser(timeout=180):
             f"could not open a system browser automatically - open this "
             f"URL yourself to log in: {url}")
 
-    params = _wait_for_callback(timeout)
+    params = _wait_for_callback(timeout, url)
     if params.get("state") != state:
         raise AuthError("browser login failed: state mismatch "
                         "(possible cross-site request, or a stale redirect)")
