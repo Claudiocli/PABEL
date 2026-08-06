@@ -55,32 +55,88 @@ pip install -e .          # from a checkout of this directory, or
 pipx install <wheel-or-git-url>   # recommended once published somewhere - see "Distribution" below
 ```
 
-Then, per agent:
+### Running `pabel-connector` after install (Windows/PowerShell gotcha)
 
+`pip install -e .` puts `pabel-connector.exe` inside whatever venv's
+`Scripts\` directory you installed into - PowerShell does **not** put that
+on `PATH` just because the install succeeded, so a bare `pabel-connector
+...` command right after installing commonly fails with `The term
+'pabel-connector' is not recognized...`. Three equally correct fixes, pick
+one:
+
+```powershell
+# 1) Activate the venv once per shell session - after this, bare
+#    `pabel-connector ...` works for every command below.
+.\.venv\Scripts\Activate.ps1
+
+# 2) Or call the exe by its full path every time, no activation needed:
+.\.venv\Scripts\pabel-connector.exe install <agent> ...
+
+# 3) Or invoke it as a module with that venv's own python - works
+#    regardless of PATH or activation state, the most foolproof option:
+.\.venv\Scripts\python.exe -m pabel_connector.cli.main install <agent> ...
 ```
-pabel-connector list                     # see every registered agent, its status, and --global support
-pabel-connector install <agent> --dir . --client-id ... --client-secret ...
-pabel-connector uninstall <agent> --dir .
 
-# or, for agents with a confirmed user-level hook location (see the coverage table above):
-pabel-connector install <agent> --global --client-id ... --client-secret ...
+All three run the exact same code - pick whichever fits how you're already
+working. The rest of this document writes bare `pabel-connector` for
+brevity; substitute whichever of the three forms above actually resolves
+on your machine.
+
+### Which directory you run this from
+
+For every agent **except** Codex CLI/ChatGPT desktop (below), `--dir`
+matters: it's the project whose hook config gets written, and `--global`
+(where supported) writes to a user-level location instead. For Codex
+CLI/ChatGPT desktop, neither matters - both always write to the one
+shared `~/.codex/config.toml`, unconditionally, regardless of which folder
+your shell happens to be in or which project either product currently has
+open. `--global` is still required for those two (see the table below),
+but only because there is no project-scoped alternative to fall back to -
+not because the current directory affects where anything lands.
+
+### Per-agent quickstart (copy-paste ready)
+
+Set these once per shell session first (PowerShell syntax - use `export`
+instead of `$env:...=` on macOS/Linux):
+
+```powershell
+$env:PABEL_KEYCLOAK_URL      = "<your deployment's value>"
+$env:PABEL_KEYCLOAK_REALM    = "<your deployment's value>"
+$env:PABEL_KEYCLOAK_CLIENT_ID = "<your deployment's value>"
+$env:PABEL_SERVER_URL        = "<your deployment's value>"
 ```
 
-`--global` writes to that agent's confirmed user-level config instead of
-`--dir`, so enforcement applies to every project you open with it, not
-just one you've explicitly installed into - rejected with a clear error
-for agents with no confirmed global location (currently VS Code) rather
-than guessing a path nothing would actually read.
+Then, per agent - `<client-id>`/`<client-secret>` come from your admin
+(`server/agents_admin.py create-installation <agent>`, see below):
+
+| Agent | Command |
+|---|---|
+| Claude Code | `pabel-connector install claude-code --dir . --client-id <id> --client-secret <secret>` (or `--global` instead of `--dir .`) |
+| VS Code | `pabel-connector install vscode --dir . --client-id <id> --client-secret <secret>` (`--global` not supported - no confirmed user-level location) |
+| GitHub Copilot CLI | `pabel-connector install copilot-cli --dir . --client-id <id> --client-secret <secret>` (or `--global`) |
+| Cursor | `pabel-connector install cursor --dir . --client-id <id> --client-secret <secret>` (or `--global`) |
+| Windsurf/Cascade | `pabel-connector install windsurf --dir . --client-id <id> --client-secret <secret>` (or `--global`) |
+| Codex CLI | `pabel-connector install codex-cli --global --client-id <id> --client-secret <secret>` (`--global` is mandatory - `--dir` is rejected, see above) |
+| ChatGPT desktop app | `pabel-connector install chatgpt-desktop --global --client-id <id> --client-secret <secret>` (`--global` is mandatory, same reason) |
+| Cline / Continue.dev | `pabel-connector install cline --dir . --client-id <id> --client-secret <secret>` (prints why there's no hook to wire - see `docs/known-gaps.md` - still stores the credential) |
+
+Verify anything above actually landed:
+
+```powershell
+pabel-connector list      # every registered agent, its status, --global support
+pabel-connector doctor    # env vars, login status, and (where applicable) hook wiring
+```
 
 `--client-id`/`--client-secret` are this specific installation's own
 Keycloak `client_credentials` credential - an admin creates it
-(`server/agents_admin.py create-installation <agent>`) and hands both
-values to you out of band; `install` only ever stores what it's given
-(prompting for the secret with hidden input if you omit it from the
-command line). This is what proves *which installation* is calling on
-every relay - see `server/README.md` and `docs/phase2-engineering-notes.md`
-for why a single shared server can no longer just trust whichever URL it
-was reached at.
+(`server/agents_admin.py create-installation <agent>`, which itself needs
+the agent product registered first via `agents_admin.py add <agent> ...`
+if it isn't already - see `server/README.md`) and hands both values to you
+out of band; `install` only ever stores what it's given (prompting for the
+secret with hidden input if you omit it from the command line). This is
+what proves *which installation* is calling on every relay - see
+`server/README.md` and `docs/phase2-engineering-notes.md` for why a single
+shared server can no longer just trust whichever URL it was reached at.
 
 ## Configure
 
