@@ -40,7 +40,7 @@ current-state reference, not the story.
 | **Cursor** | UNVERIFIED | `.cursor/hooks.json` | `~/.cursor/hooks.json` | `{"permission": "allow"\|"deny"\|"ask"}` | `agent_message` (its only channel) | Not wired yet | No |
 | **Windsurf/Cascade** | DEGRADED | `.windsurf/hooks.json` | `~/.codeium/windsurf/hooks.json` (different shape - not `~/.windsurf/`) | Exit code 2 + stderr (no JSON channel at all) | stderr → human-visible Cascade log **only** - confirmed never reaches the model | Not wired yet | No |
 | **OpenAI Codex CLI** | MCP-ONLY | `~/.codex/config.toml` (shared with ChatGPT desktop, no project-scoped variant) | `~/.codex/config.toml` (global only) | - (no hook exists) | - (no hook exists) | Yes (no hook underneath) | No |
-| **ChatGPT desktop app** | MCP-ONLY | `~/.codex/config.toml` (same file as Codex CLI above) | `~/.codex/config.toml` (global only) | - (no hook exists) | - (no hook exists) | Yes (no hook underneath) | No |
+| **ChatGPT desktop app** | MCP-ONLY | `~/.codex/config.toml` (same file as Codex CLI above) | `~/.codex/config.toml` (global only) | - (no hook exists) | - (no hook exists) | Yes (no hook underneath) | **Partially, 2026-08-06** - real `read_document` call via the chat's own MCP tool, real Keycloak login, correct per-section ABE enforcement (2 of 3 sections denied - policy required `agent_claude_code`, which `chatgpt-desktop`'s own attributes don't include; the 3rd, role-gated only, was readable). Confirms the MCP-tool path works end to end; does not and cannot verify any hook/blocking behavior, since none exists for this product. |
 | **Cline** | NO ADAPTER | - | - | - | - | - | - |
 | **Continue.dev** | NO ADAPTER | - | - | - | - | - | - |
 
@@ -75,6 +75,13 @@ Only what doesn't fit a cell above.
   whether a tool prompts or is blocked outright, never what content it
   returns. `whoami`/`read_document`/`materialize_document` are directly
   callable for both - there's just no enforcement, no blocking of a direct
-  encrypted-file read.
+  encrypted-file read. Live 2026-08-06 with ChatGPT desktop specifically: one
+  login attempt completed the OAuth exchange but failed to persist the
+  session file, root-caused to that product's own sandboxed process being
+  unable to write to the real `~/.pabel/` - `PABEL_PLUGIN_DATA_DIR` (already
+  supported by `pabel_client/session.py`/`agent_session.py`, add it to the
+  connector's own `env` block the same way as `base.SHARED_ENV_VARS`) points
+  both the session and credentials files at a directory that sandbox does
+  allow writing to, if this recurs.
 - **Cline / Continue.dev** - see `docs/known-gaps.md` for why neither has
   any adapter, or any install action at all.
