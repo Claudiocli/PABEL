@@ -43,3 +43,12 @@ def test_hook_wiring_ok_skipped_for_installer_with_no_config_file(tmp_path):
 def test_hook_wiring_not_ok_for_unregistered_agent(tmp_path):
     problem = _hook_wiring_ok("not-a-real-agent", tmp_path)
     assert problem is not None
+
+
+def test_hook_wiring_ok_skipped_for_mcp_only_installer_with_no_hook_keys(tmp_path):
+    # codex-cli/chatgpt-desktop now have a real config_path (the shared
+    # ~/.codex/config.toml) but no HOOK_KEYS at all - neither product has
+    # any hook to check. Without the HOOK_KEYS guard in _hook_wiring_ok,
+    # this would raise AttributeError instead of skipping cleanly.
+    assert _hook_wiring_ok("codex-cli", tmp_path) is None
+    assert _hook_wiring_ok("chatgpt-desktop", tmp_path) is None

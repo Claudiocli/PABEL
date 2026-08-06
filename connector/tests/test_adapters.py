@@ -8,7 +8,7 @@ docstring and the README's coverage table for verification status.
 
 import json
 
-from pabel_connector.adapters import claude_code, copilot_cli, cursor, gemini_cli, vscode, windsurf
+from pabel_connector.adapters import claude_code, copilot_cli, cursor, vscode, windsurf
 from pabel_connector.core.types import Decision, DecisionKind
 
 
@@ -216,20 +216,11 @@ def test_windsurf_render_deny_uses_exit_code_2_and_stderr():
     assert resp.stdout == ""
 
 
-# --- gemini_cli (BeforeTool, {"decision": "deny", "reason": ...}) ---------
+# Gemini CLI's adapter/installer were removed entirely (deprecated by the
+# vendor's own successor product, "Antigravity" - deliberately not
+# supported either; see docs/phase2-engineering-notes.md).
 
-def test_gemini_cli_mcp_target_recovered_from_underscore_naming():
-    call = gemini_cli.parse([], _payload("mcp_pabel_read_document", {"name": "x.abe"}))
-    assert call.mcp_target == ("pabel", "read_document")
-
-
-def test_gemini_cli_render_deny_folds_content_into_reason():
-    content = {"sections": ["hello"]}
-    resp = gemini_cli.render(Decision(DecisionKind.DENY_WITH_RELAY, reason="blocked", content=content))
-    output = json.loads(resp.stdout)
-    assert output["decision"] == "deny"
-    assert "hello" in output["reason"]
-
-
-# codex_cli has no adapter (see installers/codex_cli.py, docs/known-gaps.md) -
-# its hooks feature is documented as not available on Windows at all.
+# codex_cli/chatgpt_desktop have no adapter here (see installers/codex_cli.py,
+# installers/chatgpt_desktop.py, docs/known-gaps.md) - neither product has any
+# confirmed hook/tool-interception mechanism, only MCP tool registration
+# (installers/registry.py, not this file).

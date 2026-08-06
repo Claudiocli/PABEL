@@ -2203,3 +2203,222 @@ session, consistent with this project's standing rule that machine-wide,
 hard-to-reverse actions are handed to the user to run themselves, not
 automated. 128 pre-existing tests plus 9 new ones (`test_managed_settings.py`,
 `test_cli_generate_managed_settings.py`) - 137 total, all passing.
+
+## 21. Codex CLI + ChatGPT desktop app get real MCP registration, Gemini CLI removed (2026-08-05, later session)
+
+Three user-driven changes, on a new branch created from `main` specifically
+(`phase7-codex-chatgpt-mcp-drop-gemini`) rather than off the still-unmerged
+`phase6-managed-settings-skill-materialize`, so the two stay independently
+mergeable.
+
+**21.1 Gemini CLI removed entirely.** Not a technical gap like the others in
+`docs/known-gaps.md` - a product decision: the user no longer wants to
+support it, and declined to support its vendor-announced successor
+("Antigravity") either. Deleted `installers/gemini_cli.py` and
+`adapters/gemini_cli.py` outright (no tombstone stub, matching how this
+package has handled every other clean removal - e.g. the marketplace-plugin
+removal in §10), removed both registry entries, and cleaned every comment
+referencing it across `installers/base.py`, `installers/vscode.py`,
+`installers/windsurf.py`, `adapters/base.py`, `README.md`,
+`docs/coverage-matrix.md`, and both test files. No functional gap opens up
+from this - Gemini CLI was UNVERIFIED, never live-tested, never depended on
+by anything else in this package.
+
+**21.2 Real research (not assumptions) into Codex CLI and the ChatGPT
+desktop app**, against `developers.openai.com/codex/mcp` and
+`learn.chatgpt.com/docs/extend/mcp`:
+
+- **They share one file.** "The ChatGPT desktop app, Codex CLI, and IDE
+  extension share this configuration" - all three read the exact same
+  `~/.codex/config.toml`. Not two integrations to build independently; two
+  product names that both end up mutating one file.
+- **Neither has anything resembling `PreToolUse`.** The only relevant
+  mechanisms are `default_tools_approval_mode`/per-tool `approval_mode`
+  (prompt vs. auto-execute) and `disabled_tools` (a full deny-list) -
+  neither can substitute a blocked call's content the way `core/decide.py`
+  does for every hook-based adapter this package has. Confirmed, not
+  inferred: fetched both docs pages directly rather than trusting a
+  WebSearch summary that initially looked more permissive than it actually
+  was (an early summary implied ChatGPT's "custom connectors" require a
+  remote HTTPS endpoint only - that turned out to describe a *different*,
+  older, Business/Enterprise-tied mechanism; the shared `config.toml` path
+  supports local stdio servers too, confirmed by re-fetching the actual
+  page rather than accepting the first summary at face value).
+- **Conclusion, forced by the above, not chosen for convenience**: the only
+  thing buildable for either product is MCP tool registration
+  (`whoami`/`read_document`/`materialize_document` as directly-callable
+  tools) - zero enforcement, no interception of a direct encrypted-file
+  read. This is a real OpenAI product limitation, not a shortcut this
+  package took.
+
+**21.3 New status value: `"mcp-only"`.** Previously, an agent was either a
+hook-based adapter (`verified`/`unverified`/`degraded`) or a pure `"gap"`
+with nothing to install at all. Codex CLI/ChatGPT desktop don't fit either:
+no hook, but a real install action exists. `cli/main.py`'s `STATUS_LABELS`
+gained this third category rather than overloading `"gap"` to sometimes mean
+"nothing happens" and sometimes mean "something happens, just not
+enforcement" - the same instinct that drove every other status distinction
+already in this package (`degraded` vs. `unverified`, etc.).
+
+**21.4 Shared-file naming collision, found before it could ship broken.**
+The first draft had both installers register a server literally named
+`pabel-connector` - since they'd write into the identical `config.toml`,
+the second product's `install()` would silently overwrite the first's
+`args` (which bakes in that product's own `agent_id` - see
+`base.mcp_server_command()`). Caught by writing the test
+`test_codex_family_shared_file_does_not_collide` before assuming the design
+worked, not after. Fixed by giving each product its own server name
+(`pabel-connector-codex-cli` / `pabel-connector-chatgpt-desktop`) in the new
+shared module `installers/codex_family.py` - the "pabel" entry (the
+deployed HTTP server) has no such problem, since both callers would write
+identical content for it regardless of order.
+
+**21.5 A second real bug, caught by a failing test, not by inspection.**
+The first version of `codex_family.py` cached the resolved config path as a
+module-level constant (`CONFIG_PATH = base.global_config_path(...)`),
+evaluated once at import time. `base.global_config_path()` calls
+`Path.home()` internally - fine for every other installer, which calls it
+fresh inside `install()` on every invocation, but wrong here because the
+constant froze whatever `Path.home()` returned the moment the module was
+first imported, silently ignoring any later `monkeypatch.setattr(Path,
+"home", ...)` a test applied afterward. Every codex-family test failed with
+either the wrong path in the printed report or a `KeyError` on
+`mcp_servers` (writing to the *real* machine's `~/.codex/config.toml`
+instead of the test's `tmp_path`, then reading back the test's still-empty
+temp file). Fixed by turning it into a `config_path()` function computed
+fresh on every call - a workable general rule surfaced by this: any path
+that can be `--global`/home-relative must be resolved inside the function
+that uses it, never cached at module load time, in this package or
+generally.
+
+**21.6 `PABEL_SERVER_URL` baked in literally, not `${VAR}`-expanded.**
+Every other MCP registration in this package writes `${PABEL_SERVER_URL}`
+literally into a JSON file, relying on that agent's own runtime expansion
+(confirmed for Claude Code/VS Code's `.mcp.json` convention). Nothing found
+in Codex's `config.toml` docs confirms an equivalent for a server's `url`
+field (only `bearer_token_env_var`, an env-var-name indirection for an auth
+*token* specifically - a different mechanism, not proof this one exists
+too). Rather than assume it does, `install_mcp_registration()` reads the
+real value from `os.environ` at install time and writes it literally - if
+the deployed server's URL ever changes, re-running install is required, not
+automatic. If `PABEL_SERVER_URL` isn't set at install time, the `pabel`
+server entry is simply skipped (not a hard failure) with a loud, actionable
+message; the product's own `pabel-connector` tools still get registered
+either way, since they need no such value.
+
+**21.7 GLOBAL_ONLY, a new concept this package hadn't needed before.**
+Every previous installer either supports `--global` as an addition to a
+project-scoped default (`_supports_global`) or doesn't support it at all
+(vscode, rejected the same way). Codex CLI/ChatGPT desktop are the first
+case with no project-scoped mode to fall back to at all - `~/.codex/
+config.toml` is the only file either product ever reads, so `--dir`
+installs are actively wrong, not just unconfirmed. New `GLOBAL_ONLY` flag
+on both installer modules, checked by `cli/main.py`'s `_global_only()`
+before `install()`/`uninstall()` run at all - the inverse rejection from
+vscode's (missing `--global`, not an unsupported one). `_hook_wiring_ok()`
+also needed a second guard (`hasattr(installer, "HOOK_KEYS")`, not just
+`config_path`) since these two now have a real `config_path` but
+deliberately no `HOOK_KEYS` at all - without it, `doctor` would raise
+`AttributeError` instead of correctly skipping a product with nothing to
+check.
+
+**21.8 `tomlkit`, not the stdlib's `tomllib`.** Every JSON-based installer's
+read-merge-write discipline (`base.read_json`/`write_json`) had to be
+matched for TOML - `tomllib` is read-only (and Python 3.11+ only, while this
+package targets `>=3.10`); `tomlkit` round-trips, so an employee's own
+hand-edited `config.toml` (other MCP servers, model settings, comments)
+survives an install()/uninstall() pass unchanged apart from the pabel
+entries themselves.
+
+**21.9 Deliberately not built, kept out of this session's scope**: no
+attempt to give Codex CLI/ChatGPT desktop any form of enforcement via
+`disabled_tools` (e.g. disabling a generic file-read tool near encrypted
+documents) - considered and rejected as a fundamentally different, weaker
+guarantee than transparent relay (it would just make direct access fail
+loudly, forcing a human to manually invoke `read_document` themselves,
+never the invisible relay UX this package is otherwise built around for
+every hook-based adapter - the same tradeoff already accepted for
+Continue.dev in `docs/known-gaps.md`).
+
+**21.10 Follow-up the same session: "no enforcement at all?"** - a fair
+pushback after §21.2-§21.9 above shipped with `status = "mcp-only"`.
+Answered plainly rather than reassured away: the CP-ABE ciphertext itself
+staying meaningless without server-derived key material (confirmed in
+`server/document.py`/`mcp_server.py` - decryption keys are never present on
+any client, hook or no hook) means *confidentiality* holds regardless, but
+that is not the same claim as the *workflow* (block-and-relay) being
+enforced, and the user was explicit that the latter is what they meant by
+the question. Re-confirmed there is no technical way to get closer to real
+enforcement today - `AGENTS.md` (Codex CLI, real and documented,
+`developers.openai.com/codex/guides/agents-md`) was checked and rejected
+for this purpose specifically because OpenAI's own docs call it
+"instruction rather than enforcement... not a security sandbox," the exact
+same category as the Claude Code Skill, not a fix. The only technically
+real closure - never distributing the encrypted document corpus to a
+machine that only runs one of the no-hook/no-adapter agents, so there is
+no local ciphertext to read directly at all - is a deployment/topology
+decision, not something this package's code can enforce, and was written
+up as such in `docs/known-gaps.md`'s new "The one real mitigation" section
+rather than half-built as a false sense of enforcement. User chose
+documentation-only over also shipping an `AGENTS.md` nudge file, on the
+grounds that a nudge with an explicit "this is not enforcement" disclaimer
+adds engineering surface for a benefit the disclaimer itself says not to
+rely on.
+
+## 22. A real, live install found a real, live environment-variable bug (2026-08-06, later session)
+
+Live-testing §21's work end-to-end (real Codex CLI + ChatGPT desktop
+installs, real Keycloak, real login) surfaced a genuine bug, not just a
+usability rough edge: `pabel-connector install codex-cli`/`chatgpt-desktop`
+only ever *printed* "Env vars needed" as a reminder - it never made those
+values reach the place that actually needs them, `mcp_local_server.py`'s
+own subprocess environment (`pabel_client/relay.py`/`keycloak_client.py`
+both read `PABEL_SERVER_URL`/`PABEL_KEYCLOAK_URL`/`_REALM`/`_CLIENT_ID`
+straight from `os.environ` at call time, inside that subprocess).
+
+**The failure mode, reproduced live**: the employee set all four values
+correctly and *persistently* (`[Environment]::SetEnvironmentVariable(...,
+"User")`, confirmed directly against the registry, not guessed) - and
+`login`/`read_document` still failed. Root cause: ChatGPT desktop and Codex
+CLI were already running when the persistent variables were set. A Windows
+process only reads its environment at its own startup; a persistent
+variable change doesn't retroactively reach an already-running process (or
+anything it spawns later) until that process restarts. This is a real,
+repeatable failure class for any GUI-app-hosted MCP subprocess, not
+specific to this employee's setup.
+
+**Fix, not a workaround**: `config.toml`'s own per-server `[mcp_servers.
+<name>.env]` block (confirmed real syntax, same source as §21.2) lets
+`install_mcp_registration()` (`installers/codex_family.py`) capture
+whichever of `base.SHARED_ENV_VARS` are present in the *installing shell's*
+environment and write them directly into that product's own MCP server
+entry - Codex CLI/ChatGPT desktop then inject them into the tool
+subprocess themselves, every time it's spawned, straight from the file.
+This removes the OS-level environment/app-restart failure class entirely
+for these two products: the values only ever need to be correct in the
+shell that runs `install` once, not anywhere else, ever again (until they
+change, at which point re-running `install` updates the file - same
+"bake it in, re-run to refresh" tradeoff already accepted for
+`PABEL_SERVER_URL` in §21.6, now applied to all four).
+
+Partial capture is graceful, not a hard failure: whichever variables are
+actually set get written; missing ones are named explicitly in the
+returned message rather than silently left out. `cli/main.py`'s generic
+post-install "Env vars needed" reminder (`cmd_install`) is now suppressed
+for these two specifically (`_global_only(installer)`) - printing it
+unconditionally would actively contradict what `install()` itself already
+reported having captured.
+
+**A second bug this surfaced, in the test suite itself**: none of
+`test_installers.py`'s codex-family tests isolated `os.environ` from the
+real machine running the suite - since these same four variables are set
+persistently on this development machine (the exact thing that caused the
+live bug above), several assertions were at risk of silently passing for
+the wrong reason (picking up this machine's real values instead of each
+test's own explicit `monkeypatch.setenv`/absence of one). Fixed with an
+autouse fixture at the top of `test_installers.py` that clears
+`base.SHARED_ENV_VARS` before every test in that file - the kind of
+environment leak that stays invisible until the suite runs on a
+differently-configured machine (or, as here, is caught by noticing the
+live bug and then checking whether the tests could have caught it, and
+finding they couldn't have).

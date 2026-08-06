@@ -15,7 +15,7 @@ versions of that file guessed).
 
 Supports `--global`: confirmed 2026-08 via docs.devin.ai/desktop/cascade/
 hooks (the current redirect target of docs.windsurf.com/windsurf/cascade/
-hooks) - unlike Cursor/Gemini CLI/Claude Code, the user-level path is NOT
+hooks) - unlike Cursor/Claude Code, the user-level path is NOT
 just this same relative path rooted at $HOME; it's `~/.codeium/windsurf/
 hooks.json`, documented as applying across all platforms with no Windows-
 specific variation. Windsurf also documents a third, system-level tier

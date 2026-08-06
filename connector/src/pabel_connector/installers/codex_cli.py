@@ -1,4 +1,4 @@
-"""OpenAI Codex CLI - NO ADAPTER (documented gap), same category as Cline.
+"""OpenAI Codex CLI - `status = "mcp-only"`, not a full adapter.
 
 Previously shipped as DEGRADED (Bash-only coverage, hooks feature-flagged
 on). A 2026-08 re-check of current docs/issue trackers (prompted by
@@ -13,30 +13,47 @@ the exact same blocking criterion already applied to Cline
 non-Windows (this project's own dev machine is Windows), so a hook
 surface unavailable there isn't a workable adapter, regardless of how good
 its (already Bash-only) coverage would be on the platforms where it does
-load. Kept registered here (unlike a silent removal) so `pabel-connector
-install codex-cli` explains this rather than erroring confusingly.
+load.
+
+That still leaves a real install action, though: Codex CLI shares its
+`~/.codex/config.toml` MCP configuration with the ChatGPT desktop app (see
+installers/codex_family.py's docstring for the confirmed source) - so
+`install()` here registers `whoami`/`read_document`/`materialize_document`
+as directly-callable MCP tools, same as every other agent's "Direct MCP
+tools" column, just without any hook underneath it. No enforcement: a
+direct read of an encrypted document is never blocked or substituted -
+these tools only run if explicitly called. See docs/known-gaps.md.
+
+GLOBAL_ONLY: unlike every hook-based installer, there is no meaningful
+per-project variant here - `~/.codex/config.toml` is the one file both
+Codex CLI and the ChatGPT desktop app read, always. cli/main.py rejects
+`install codex-cli --dir .` without `--global` rather than silently writing
+somewhere neither product would ever look.
 """
 
 from pathlib import Path
 
+from . import codex_family
+
 name = "codex-cli"
-status = "gap"
+status = "mcp-only"
+GLOBAL_ONLY = True
+
+GLOBAL_CONFIG_RELATIVE_PATH = Path(".codex") / "config.toml"
+CONNECTOR_SERVER_NAME = "pabel-connector-codex-cli"
 
 
 def required_env():
     return []
 
 
-def install(base_dir: Path) -> str:
-    return (
-        "No adapter for Codex CLI: its hooks feature is experimental and "
-        "explicitly documented as not available on Windows at all - the same "
-        "employee-machines-can't-be-assumed-non-Windows reasoning that already "
-        "rules out Cline applies here too, even though Codex CLI's hooks (where "
-        "they do load) would only ever cover the Bash tool anyway. See "
-        "connector/docs/known-gaps.md.\n"
-        "Codex CLI can still be pointed at the deployed PABEL MCP server "
-        "directly (whoami/read_document become normal callable tools, same as "
-        "any MCP client) - ask your admin for the deployed server's connection "
-        "details."
-    )
+def config_path(base_dir: Path) -> Path:
+    return codex_family.config_path()  # base_dir ignored - GLOBAL_ONLY, one shared file
+
+
+def install(base_dir: Path, global_: bool = False) -> str:
+    return codex_family.install_mcp_registration(name, CONNECTOR_SERVER_NAME)
+
+
+def uninstall(base_dir: Path, global_: bool = False) -> str:
+    return codex_family.uninstall_mcp_registration(name, CONNECTOR_SERVER_NAME)

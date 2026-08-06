@@ -34,8 +34,8 @@ sends it to the server."
 | GitHub Copilot CLI | UNVERIFIED | Yes | Not yet wired | Path confirmed against current docs; `additionalContext` unreliable per open vendor issues (#2585/#2980) - content folded into the deny reason instead. |
 | Cursor | UNVERIFIED | Yes | Not yet wired | 3 hook points (read/shell/MCP); response fields confirmed snake_case. No pre-write-block hook exists (low-impact - `core/decide.py`'s `DENY_MUTATING` covers writes regardless). |
 | Windsurf/Cascade | **DEGRADED** | Yes (different shape: `~/.codeium/windsurf/`, not `~/.windsurf/`) | Not yet wired | Blocking is confirmed exit-code-2-plus-stderr only, reaching a human-visible log, never the model's context - a real vendor ceiling, not just unverified. |
-| Gemini CLI | UNVERIFIED | Yes | Not yet wired | Catch-all `BeforeTool` matcher; content folded into the deny reason. |
-| OpenAI Codex CLI | **NO ADAPTER** | N/A | N/A | Hooks documented as unavailable on Windows at all. See `docs/known-gaps.md`. |
+| OpenAI Codex CLI | **MCP TOOLS ONLY** | Yes (`--global` only - no project-scoped variant) | Yes | No hook/interception mechanism confirmed to exist for this product at all - registers `whoami`/`read_document`/`materialize_document` in `~/.codex/config.toml`, **zero enforcement**. Shares that file with ChatGPT Desktop below. See `docs/known-gaps.md`. |
+| ChatGPT desktop app | **MCP TOOLS ONLY** | Yes (`--global` only) | Yes | Same file, same limitation, as Codex CLI above - confirmed via OpenAI's own docs that both products read `~/.codex/config.toml`. See `docs/known-gaps.md`. |
 | Cline | **NO ADAPTER** | N/A | N/A | Hooks are Windows-unsupported today. See `docs/known-gaps.md`. |
 | Continue.dev | **NO ADAPTER** | N/A | N/A | No pre-tool-use hook primitive exists. See `docs/known-gaps.md`. |
 
@@ -44,7 +44,9 @@ beyond Claude Code/VS Code in a real rollout** - "built to spec" is not the
 same claim as "confirmed against the real agent." "Direct MCP tools" means
 `mcp_local_server.py`'s whoami/read_document/login are registered as
 directly callable tools for that agent, independent of the hook - not yet
-done for Cursor/Windsurf/Gemini CLI/Copilot CLI, tracked as an open item.
+done for Cursor/Windsurf/Copilot CLI, tracked as an open item. Gemini CLI
+support was removed entirely (deprecated by its own vendor's successor
+product, "Antigravity" - deliberately not supported either).
 
 ## Install
 
@@ -53,32 +55,106 @@ pip install -e .          # from a checkout of this directory, or
 pipx install <wheel-or-git-url>   # recommended once published somewhere - see "Distribution" below
 ```
 
-Then, per agent:
+### Running `pabel-connector` after install (Windows/PowerShell gotcha)
 
+`pip install -e .` puts `pabel-connector.exe` inside whatever venv's
+`Scripts\` directory you installed into - PowerShell does **not** put that
+on `PATH` just because the install succeeded, so a bare `pabel-connector
+...` command right after installing commonly fails with `The term
+'pabel-connector' is not recognized...`. Three equally correct fixes, pick
+one:
+
+```powershell
+# 1) Activate the venv once per shell session - after this, bare
+#    `pabel-connector ...` works for every command below.
+.\.venv\Scripts\Activate.ps1
+
+# 2) Or call the exe by its full path every time, no activation needed:
+.\.venv\Scripts\pabel-connector.exe install <agent> ...
+
+# 3) Or invoke it as a module with that venv's own python - works
+#    regardless of PATH or activation state, the most foolproof option:
+.\.venv\Scripts\python.exe -m pabel_connector.cli.main install <agent> ...
 ```
-pabel-connector list                     # see every registered agent, its status, and --global support
-pabel-connector install <agent> --dir . --client-id ... --client-secret ...
-pabel-connector uninstall <agent> --dir .
 
-# or, for agents with a confirmed user-level hook location (see the coverage table above):
-pabel-connector install <agent> --global --client-id ... --client-secret ...
+All three run the exact same code - pick whichever fits how you're already
+working. The rest of this document writes bare `pabel-connector` for
+brevity; substitute whichever of the three forms above actually resolves
+on your machine.
+
+### Which directory you run this from
+
+For every agent **except** Codex CLI/ChatGPT desktop (below), `--dir`
+matters: it's the project whose hook config gets written, and `--global`
+(where supported) writes to a user-level location instead. For Codex
+CLI/ChatGPT desktop, neither matters - both always write to the one
+shared `~/.codex/config.toml`, unconditionally, regardless of which folder
+your shell happens to be in or which project either product currently has
+open. `--global` is still required for those two (see the table below),
+but only because there is no project-scoped alternative to fall back to -
+not because the current directory affects where anything lands.
+
+### Per-agent quickstart (copy-paste ready)
+
+Set these once per shell session first (PowerShell syntax - use `export`
+instead of `$env:...=` on macOS/Linux) - **required in the shell that runs
+`install` itself, for every agent**:
+
+```powershell
+$env:PABEL_KEYCLOAK_URL      = "<your deployment's value>"
+$env:PABEL_KEYCLOAK_REALM    = "<your deployment's value>"
+$env:PABEL_KEYCLOAK_CLIENT_ID = "<your deployment's value>"
+$env:PABEL_SERVER_URL        = "<your deployment's value>"
 ```
 
-`--global` writes to that agent's confirmed user-level config instead of
-`--dir`, so enforcement applies to every project you open with it, not
-just one you've explicitly installed into - rejected with a clear error
-for agents with no confirmed global location (currently VS Code) rather
-than guessing a path nothing would actually read.
+For Codex CLI/ChatGPT desktop specifically, that's also the **only** place
+these ever need to be set: `install` captures whichever of these four are
+present in this shell straight into that product's own `config.toml`
+entry (`[mcp_servers.<name>.env]`), which Codex CLI/ChatGPT desktop then
+inject into the tool's own subprocess directly - no OS-level/persistent
+environment variable, no shell profile edit, and no dependency on
+already-running-app-picks-up-a-later-change (a real, confirmed point of
+confusion this specifically avoids - persistent Windows env vars are only
+read by a process at *its own* startup, so an app already running when you
+set one keeps using its old environment until fully restarted; capturing
+into `config.toml` sidesteps that class of problem for these two agents
+entirely). Every other agent below still needs these set in whatever
+environment actually runs its hook subprocess (typically inherited from
+however you launch that agent, not something `pabel-connector install`
+can capture the same way, since their own hook config format doesn't
+support scoping this per-tool the way `config.toml` does).
+
+Then, per agent - `<client-id>`/`<client-secret>` come from your admin
+(`server/agents_admin.py create-installation <agent>`, see below):
+
+| Agent | Command |
+|---|---|
+| Claude Code | `pabel-connector install claude-code --dir . --client-id <id> --client-secret <secret>` (or `--global` instead of `--dir .`) |
+| VS Code | `pabel-connector install vscode --dir . --client-id <id> --client-secret <secret>` (`--global` not supported - no confirmed user-level location) |
+| GitHub Copilot CLI | `pabel-connector install copilot-cli --dir . --client-id <id> --client-secret <secret>` (or `--global`) |
+| Cursor | `pabel-connector install cursor --dir . --client-id <id> --client-secret <secret>` (or `--global`) |
+| Windsurf/Cascade | `pabel-connector install windsurf --dir . --client-id <id> --client-secret <secret>` (or `--global`) |
+| Codex CLI | `pabel-connector install codex-cli --global --client-id <id> --client-secret <secret>` (`--global` is mandatory - `--dir` is rejected, see above) |
+| ChatGPT desktop app | `pabel-connector install chatgpt-desktop --global --client-id <id> --client-secret <secret>` (`--global` is mandatory, same reason) |
+| Cline / Continue.dev | `pabel-connector install cline --dir . --client-id <id> --client-secret <secret>` (prints why there's no hook to wire - see `docs/known-gaps.md` - still stores the credential) |
+
+Verify anything above actually landed:
+
+```powershell
+pabel-connector list      # every registered agent, its status, --global support
+pabel-connector doctor    # env vars, login status, and (where applicable) hook wiring
+```
 
 `--client-id`/`--client-secret` are this specific installation's own
 Keycloak `client_credentials` credential - an admin creates it
-(`server/agents_admin.py create-installation <agent>`) and hands both
-values to you out of band; `install` only ever stores what it's given
-(prompting for the secret with hidden input if you omit it from the
-command line). This is what proves *which installation* is calling on
-every relay - see `server/README.md` and `docs/phase2-engineering-notes.md`
-for why a single shared server can no longer just trust whichever URL it
-was reached at.
+(`server/agents_admin.py create-installation <agent>`, which itself needs
+the agent product registered first via `agents_admin.py add <agent> ...`
+if it isn't already - see `server/README.md`) and hands both values to you
+out of band; `install` only ever stores what it's given (prompting for the
+secret with hidden input if you omit it from the command line). This is
+what proves *which installation* is calling on every relay - see
+`server/README.md` and `docs/phase2-engineering-notes.md` for why a single
+shared server can no longer just trust whichever URL it was reached at.
 
 ## Configure
 
@@ -173,7 +249,7 @@ step, same split `server/agents_admin.py` already draws elsewhere. VS Code has
 an analogous-looking channel that isn't yet confirmed to cover hooks
 specifically - see that document before assuming it works the same way there.
 
-See `docs/known-gaps.md` for Cline/Continue.dev/Codex CLI, and
+See `docs/known-gaps.md` for Cline/Continue.dev/Codex CLI/ChatGPT desktop, and
 `docs/coverage-matrix.md` for exactly what's confirmed vs. assumed for
 every other adapter. In short: Claude Code and VS Code have both been
 tried against a real, live install and work end-to-end; every other
@@ -181,7 +257,7 @@ adapter's path/schema has at least been re-checked against current
 official docs (a live VS Code attempt originally found its first guess was
 simply wrong, which prompted re-verifying all of them; several other real
 bugs turned up and are already fixed - see coverage-matrix.md), but none of
-Cursor/Windsurf/Gemini CLI/Copilot CLI has been exercised end-to-end
+Cursor/Windsurf/Copilot CLI has been exercised end-to-end
 against a real agent session yet, and none of them has `mcp_local_server.py`
 wired in as directly-callable tools yet either (Claude Code and VS Code
 only, so far). Windsurf is structurally limited (confirmed no channel to

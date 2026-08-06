@@ -1,8 +1,22 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from pabel_connector.installers import base
 from pabel_connector.installers.registry import INSTALLERS
+
+
+@pytest.fixture(autouse=True)
+def _clean_pabel_env(monkeypatch):
+    # installers/codex_family.py reads base.SHARED_ENV_VARS from os.environ
+    # at install time - without this, tests here would silently pick up
+    # whatever real PABEL_* values happen to be set persistently on the
+    # machine actually running the suite (confirmed to happen in real use -
+    # see docs/phase2-engineering-notes.md), making pass/fail depend on the
+    # runner's own machine instead of what each test explicitly sets.
+    for var in base.SHARED_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
 
 
 def test_merge_hook_list_is_idempotent():
@@ -110,48 +124,129 @@ def test_windsurf_install_writes_all_four_hook_points(tmp_path):
     assert set(data["hooks"]) == {"pre_read_code", "pre_write_code", "pre_run_command", "pre_mcp_tool_use"}
 
 
-def test_gemini_cli_install_preserves_unrelated_hooks(tmp_path):
-    config_path = tmp_path / ".gemini" / "settings.json"
-    config_path.parent.mkdir(parents=True)
-    config_path.write_text(json.dumps({
-        "hooks": {"BeforeTool": [{"matcher": "write_file", "hooks": [{"command": "secret-scanner"}]}]},
-        "someOtherTeamSetting": True,
-    }))
-    INSTALLERS["gemini-cli"].install(tmp_path)
-    data = json.loads(config_path.read_text())
-    assert data["someOtherTeamSetting"] is True
-    matchers = {e["matcher"] for e in data["hooks"]["BeforeTool"]}
-    assert matchers == {"write_file", "*"}
+# Gemini CLI's install/uninstall tests were removed along with the adapter
+# itself - deprecated by the vendor's own successor product ("Antigravity"),
+# deliberately not supported either. See docs/phase2-engineering-notes.md.
 
 
-def test_uninstall_removes_only_pabel_hooks(tmp_path):
-    INSTALLERS["gemini-cli"].install(tmp_path)
-    config_path = tmp_path / ".gemini" / "settings.json"
-    data = json.loads(config_path.read_text())
-    data["hooks"]["BeforeTool"].append({"matcher": "write_file", "hooks": [{"command": "secret-scanner"}]})
-    config_path.write_text(json.dumps(data))
-
-    path = INSTALLERS["gemini-cli"].config_path(tmp_path)
-    current = base.read_json(path)
-    commands = {base.hook_command(k) for k in INSTALLERS["gemini-cli"].HOOK_KEYS}
-    removed = base.remove_matching_commands(current, commands)
-    base.write_json(path, current)
-
-    assert removed is True
-    final = json.loads(config_path.read_text())
-    all_commands = [h["command"] for entry in final["hooks"]["BeforeTool"] for h in entry.get("hooks", [])]
-    assert "secret-scanner" in all_commands
-    assert not any("pabel_connector.hook" in c for c in all_commands)
+def _codex_home_toml(tmp_path):
+    import tomlkit as _tomlkit
+    path = tmp_path / ".codex" / "config.toml"
+    return _tomlkit.parse(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
-def test_codex_cli_is_a_documented_gap_not_an_installer(tmp_path):
-    # Codex CLI's hooks feature is documented as unavailable on Windows at
-    # all (see installers/codex_cli.py) - same category as Cline, a no-op
-    # explainer rather than something that writes config.
-    codex_cli = INSTALLERS["codex-cli"]
-    assert codex_cli.status == "gap"
-    message = codex_cli.install(tmp_path)
-    assert "No adapter" in message
+def test_codex_cli_status_is_mcp_only_not_gap(tmp_path):
+    # Codex CLI's hooks feature is still documented as unavailable on
+    # Windows at all (see installers/codex_cli.py) - but unlike cline/
+    # continue-dev, there IS a real install action: MCP tool registration
+    # in the config.toml it shares with the ChatGPT desktop app.
+    assert INSTALLERS["codex-cli"].status == "mcp-only"
+
+
+def test_codex_cli_install_requires_global(tmp_path):
+    from pabel_connector.cli.main import main as cli_main
+    exit_code = cli_main(["install", "codex-cli", "--dir", str(tmp_path),
+                          "--client-id", "x", "--client-secret", "y"])
+    assert exit_code == 2
+    assert not (tmp_path / ".codex").exists()
+
+
+def test_codex_cli_install_registers_its_own_mcp_server(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("PABEL_SERVER_URL", "http://localhost:8001/mcp")
+    INSTALLERS["codex-cli"].install(tmp_path, global_=True)
+    data = _codex_home_toml(tmp_path)
+    servers = data["mcp_servers"]
+    assert servers["pabel-connector-codex-cli"]["args"][-2:] == \
+        ["pabel_connector.mcp_local_server", "codex-cli"]
+    assert servers["pabel"]["url"] == "http://localhost:8001/mcp"
+
+
+def test_codex_cli_install_captures_all_shared_env_vars_into_own_env_block(tmp_path, monkeypatch):
+    # relay.py/keycloak_client.py read these from os.environ *inside the
+    # mcp_local_server.py subprocess Codex CLI spawns* - captured here so
+    # nothing needs to be set in the user's own shell or the OS's
+    # persistent environment for the tools to actually work (found live
+    # 2026-08 - see docs/phase2-engineering-notes.md).
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("PABEL_KEYCLOAK_URL", "http://localhost:8080")
+    monkeypatch.setenv("PABEL_KEYCLOAK_REALM", "pabel")
+    monkeypatch.setenv("PABEL_KEYCLOAK_CLIENT_ID", "pabel")
+    monkeypatch.setenv("PABEL_SERVER_URL", "http://localhost:8001/mcp")
+    INSTALLERS["codex-cli"].install(tmp_path, global_=True)
+    env = _codex_home_toml(tmp_path)["mcp_servers"]["pabel-connector-codex-cli"]["env"]
+    assert dict(env) == {
+        "PABEL_KEYCLOAK_URL": "http://localhost:8080",
+        "PABEL_KEYCLOAK_REALM": "pabel",
+        "PABEL_KEYCLOAK_CLIENT_ID": "pabel",
+        "PABEL_SERVER_URL": "http://localhost:8001/mcp",
+    }
+
+
+def test_codex_cli_install_without_server_url_warns_and_skips_pabel_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    message = INSTALLERS["codex-cli"].install(tmp_path, global_=True)
+    assert "Not set in this shell, so not captured" in message
+    assert "PABEL_SERVER_URL" in message
+    data = _codex_home_toml(tmp_path)
+    assert "pabel" not in data["mcp_servers"]
+    assert "pabel-connector-codex-cli" in data["mcp_servers"]
+    assert "env" not in data["mcp_servers"]["pabel-connector-codex-cli"]
+
+
+def test_codex_cli_install_captures_only_the_env_vars_that_are_set(tmp_path, monkeypatch):
+    # Partial capture: some set, some not - the ones present still get
+    # written, missing ones are named in the warning, not a hard failure.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("PABEL_KEYCLOAK_URL", "http://localhost:8080")
+    message = INSTALLERS["codex-cli"].install(tmp_path, global_=True)
+    assert "PABEL_KEYCLOAK_REALM" in message
+    assert "PABEL_KEYCLOAK_CLIENT_ID" in message
+    assert "PABEL_SERVER_URL" in message
+    env = _codex_home_toml(tmp_path)["mcp_servers"]["pabel-connector-codex-cli"]["env"]
+    assert dict(env) == {"PABEL_KEYCLOAK_URL": "http://localhost:8080"}
+
+
+def test_codex_family_shared_file_does_not_collide(tmp_path, monkeypatch):
+    # The whole reason for per-agent server names (pabel-connector-codex-cli
+    # vs. pabel-connector-chatgpt-desktop) - installing both into the one
+    # shared ~/.codex/config.toml must not let the second overwrite the
+    # first's entry, in either install order.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("PABEL_SERVER_URL", "http://localhost:8001/mcp")
+    INSTALLERS["codex-cli"].install(tmp_path, global_=True)
+    INSTALLERS["chatgpt-desktop"].install(tmp_path, global_=True)
+    data = _codex_home_toml(tmp_path)
+    servers = data["mcp_servers"]
+    assert "pabel-connector-codex-cli" in servers
+    assert "pabel-connector-chatgpt-desktop" in servers
+    assert servers["pabel-connector-codex-cli"]["args"][-1] == "codex-cli"
+    assert servers["pabel-connector-chatgpt-desktop"]["args"][-1] == "chatgpt-desktop"
+    assert servers["pabel"]["url"] == "http://localhost:8001/mcp"
+
+
+def test_codex_cli_uninstall_removes_only_its_own_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("PABEL_SERVER_URL", "http://localhost:8001/mcp")
+    INSTALLERS["codex-cli"].install(tmp_path, global_=True)
+    INSTALLERS["chatgpt-desktop"].install(tmp_path, global_=True)
+    INSTALLERS["codex-cli"].uninstall(tmp_path, global_=True)
+    data = _codex_home_toml(tmp_path)
+    servers = data["mcp_servers"]
+    assert "pabel-connector-codex-cli" not in servers
+    assert "pabel-connector-chatgpt-desktop" in servers
+    assert "pabel" in servers  # uninstall never touches the shared deployed-server entry
+
+
+def test_chatgpt_desktop_status_is_mcp_only(tmp_path):
+    assert INSTALLERS["chatgpt-desktop"].status == "mcp-only"
+
+
+def test_chatgpt_desktop_install_requires_global(tmp_path):
+    from pabel_connector.cli.main import main as cli_main
+    exit_code = cli_main(["install", "chatgpt-desktop", "--dir", str(tmp_path),
+                          "--client-id", "x", "--client-secret", "y"])
+    assert exit_code == 2
     assert not (tmp_path / ".codex").exists()
 
 
@@ -245,8 +340,15 @@ def test_gap_installers_do_not_crash_and_write_nothing(tmp_path):
 def test_global_supported_agents_match_confirmed_docs():
     supported = {key for key, installer in INSTALLERS.items()
                 if hasattr(installer, "GLOBAL_CONFIG_RELATIVE_PATH")}
-    assert supported == {"claude-code", "cursor", "gemini-cli", "windsurf", "copilot-cli"}
+    assert supported == {"claude-code", "cursor", "windsurf", "copilot-cli",
+                         "codex-cli", "chatgpt-desktop"}
     assert "vscode" not in supported
+
+
+def test_global_only_agents_are_exactly_the_codex_family():
+    from pabel_connector.cli.main import _global_only
+    global_only = {key for key, installer in INSTALLERS.items() if _global_only(installer)}
+    assert global_only == {"codex-cli", "chatgpt-desktop"}
 
 
 def test_claude_code_global_install_writes_to_home(tmp_path, monkeypatch):
@@ -261,16 +363,10 @@ def test_cursor_global_install_writes_to_home(tmp_path, monkeypatch):
     assert (tmp_path / ".cursor" / "hooks.json").exists()
 
 
-def test_gemini_cli_global_install_writes_to_home(tmp_path, monkeypatch):
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    INSTALLERS["gemini-cli"].install(tmp_path / "some-project", global_=True)
-    assert (tmp_path / ".gemini" / "settings.json").exists()
-
-
 def test_windsurf_global_install_uses_codeium_path_not_dot_windsurf(tmp_path, monkeypatch):
     # Windsurf's confirmed global path is ~/.codeium/windsurf/hooks.json,
     # NOT ~/.windsurf/hooks.json - a genuinely different relative shape
-    # from its workspace path, unlike cursor/gemini-cli/claude-code.
+    # from its workspace path, unlike cursor/claude-code.
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     INSTALLERS["windsurf"].install(tmp_path / "some-project", global_=True)
     assert (tmp_path / ".codeium" / "windsurf" / "hooks.json").exists()
