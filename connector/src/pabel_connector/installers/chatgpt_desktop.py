@@ -29,6 +29,11 @@ regardless of the shared config mechanics.
 GLOBAL_ONLY: the desktop app has no concept of a project directory at all
 - `~/.codex/config.toml` is the only place it ever looks. Same rejection
 as codex_cli.py for `install chatgpt-desktop --dir .` without `--global`.
+
+Also installs an informational skill (see codex_family.install_skill()) -
+the exact same file codex_cli.py installs (one shared skill for this
+package, not one per product), since Agent Skills are a cross-vendor
+standard both products read from the same location.
 """
 
 from pathlib import Path
@@ -52,7 +57,9 @@ def config_path(base_dir: Path) -> Path:
 
 
 def install(base_dir: Path, global_: bool = False) -> str:
-    return codex_family.install_mcp_registration(name, CONNECTOR_SERVER_NAME)
+    mcp_message = codex_family.install_mcp_registration(name, CONNECTOR_SERVER_NAME)
+    skill_message = codex_family.install_skill()
+    return f"{mcp_message}\n{skill_message}"
 
 
 def uninstall(base_dir: Path, global_: bool = False) -> str:

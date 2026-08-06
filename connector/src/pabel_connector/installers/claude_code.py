@@ -30,8 +30,22 @@ just the one `--dir` points at). `.mcp.json` registration always stays
 per-project regardless: Claude Code's own user-scope MCP mechanism (`claude
 mcp add --scope user`) is a CLI-managed store, not a plain JSON file this
 package can confirm the shape of - unattempted, not just unconfirmed.
+
+Also writes a second hook point, `SessionEnd` - a real, distinct Claude Code
+event (fires once per session, not once per turn like `Stop`) used to purge
+anything `materialize_document` left behind this session (see
+pabel_client/materialize.py, adapters/claude_code.py's handle_session_end).
+This is the only agent this package wires SessionEnd for, since it's the
+only one a SessionEnd-equivalent has been confirmed for.
+
+Also copies `skills/pabel/SKILL.md` (this repo's, packaged alongside the
+installer) into `.claude/skills/pabel/SKILL.md` - purely informational (see
+that file's own frontmatter), never a security control; only Claude Code
+gets this because Skills aren't a cross-agent concept, not because of any
+special-casing this package otherwise avoids.
 """
 
+from importlib import resources
 from pathlib import Path
 
 from . import base
@@ -42,7 +56,8 @@ status = "verified"
 CONFIG_RELATIVE_PATH = Path(".claude") / "settings.json"
 GLOBAL_CONFIG_RELATIVE_PATH = CONFIG_RELATIVE_PATH
 MCP_CONFIG_RELATIVE_PATH = Path(".mcp.json")
-HOOK_KEYS = ["claude-code"]
+SKILL_RELATIVE_PATH = Path(".claude") / "skills" / "pabel" / "SKILL.md"
+HOOK_KEYS = ["claude-code", "claude-code:session-end"]
 
 
 def required_env():
@@ -69,12 +84,24 @@ def _merge_nested_hook_list(existing: list, command: str) -> list:
     return existing
 
 
+def _install_skill(skill_path: Path) -> None:
+    """Copy this package's own bundled SKILL.md (see pyproject.toml's
+    package-data entry for why it ships inside the wheel, not just the
+    source checkout) to skill_path, overwriting any previous copy so a
+    re-install always picks up this version's text."""
+    skill_path.parent.mkdir(parents=True, exist_ok=True)
+    source = resources.files("pabel_connector").joinpath("skills", "pabel", "SKILL.md")
+    skill_path.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+
 def install(base_dir: Path, global_: bool = False) -> str:
     path = base.global_config_path(GLOBAL_CONFIG_RELATIVE_PATH) if global_ else config_path(base_dir)
     data = base.read_json(path)
     hooks = data.setdefault("hooks", {})
     hooks["PreToolUse"] = _merge_nested_hook_list(hooks.get("PreToolUse"),
                                                   base.hook_command("claude-code"))
+    hooks["SessionEnd"] = _merge_nested_hook_list(hooks.get("SessionEnd"),
+                                                  base.hook_command("claude-code:session-end"))
     base.write_json(path, data)
 
     mcp_path = base_dir / MCP_CONFIG_RELATIVE_PATH
@@ -85,11 +112,15 @@ def install(base_dir: Path, global_: bool = False) -> str:
     servers["pabel-connector"] = {"command": command, "args": args}
     base.write_json(mcp_path, mcp_data)
 
+    skill_path = base.global_config_path(SKILL_RELATIVE_PATH) if global_ else base_dir / SKILL_RELATIVE_PATH
+    _install_skill(skill_path)
+
     scope = " (global - applies to every project, not just this directory)" if global_ else ""
     return (
-        f"Wrote a catch-all PreToolUse hook to {path}{scope}\n"
+        f"Wrote a catch-all PreToolUse hook and a SessionEnd cleanup hook to {path}{scope}\n"
         f"Registered the deployed server's own tools and mcp_local_server.py's "
-        f"whoami/read_document/login tools in {mcp_path} (always per-project - "
-        f"see this module's docstring for why).\n"
+        f"whoami/read_document/login/materialize_document tools in {mcp_path} "
+        f"(always per-project - see this module's docstring for why).\n"
+        f"Installed an informational skill (not a security control) to {skill_path}\n"
         f"(VERIFIED end-to-end - see docs/phase2-engineering-notes.md.)"
     )

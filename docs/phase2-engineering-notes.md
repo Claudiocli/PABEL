@@ -1947,14 +1947,271 @@ so it stops reading as a nagging always-open item. No code or doc change
 beyond this note; the risk (an untested realm-import declaration) is
 accepted as-is until a recreation happens anyway.
 
-## 19. Codex CLI + ChatGPT desktop app get real MCP registration, Gemini CLI removed (2026-08-05, later session)
+## 19. Managed settings, an informational skill, and a "usa e getta" materialized copy (2026-08-04, later session)
+
+Three items from `points.txt` (the user's own notes from a call with a tutor
+and a colleague) were compared against the real state of the code this
+session and found to be genuine gaps, not false alarms - this section covers
+closing (or deliberately, explicitly not closing) all three. Worked on a
+dedicated branch (`phase6-managed-settings-skill-materialize`), not `main`,
+per the user's own explicit request.
+
+### 19.1 Managed settings - Claude Code only, researched not guessed
+
+Confirmed via live web research (not assumed, consistent with this project's
+standing rule since the vscode path/schema incident of always checking
+current vendor docs rather than trusting prior research): Claude Code has a
+real, enforceable managed-settings layer. `allowManagedHooksOnly: true` (paired
+with `allowManagedPermissionRulesOnly: true`) makes the managed layer the only
+source of hooks that runs at all - a project's or user's own
+`.claude/settings.json` can no longer add, remove, or override them. Two
+Windows deployment channels, both confirmed: registry
+(`HKLM\SOFTWARE\Policies\ClaudeCode\Settings`, via GPO/Intune) or file
+(`C:\Program Files\ClaudeCode\managed-settings.json`). The one sharp edge
+worth remembering: malformed JSON in that layer makes Claude Code silently
+fall back to user/project settings with **no visible error** - the worst
+failure mode, since it looks like enforcement is still active. Documented in
+new `connector/docs/managed-settings.md`, including the exact JSON to deploy
+(the same hook commands `pabel-connector install claude-code` itself writes,
+now including the `SessionEnd` hook from §19.3) and the `/status` check to
+verify the managed layer is actually active after deploying.
+
+**Addendum, same session**: a live test (deliberately deleting the hook from
+this repo's own `.claude/settings.json` to demonstrate the exposure, then
+restoring it via git) prompted the follow-up question of whether
+`allowManagedHooksOnly`/`allowManagedPermissionRulesOnly` also cover `.mcp.json`'s
+`pabel`/`pabel-connector` registrations. Checked against current docs rather
+than assumed: they don't - MCP server enforcement is a wholly separate
+mechanism (`managed-mcp.json`, a standalone file, exclusive-control mode) with
+its own bypassable weaker alternative (`allowedMcpServers` +
+`allowManagedMcpServersOnly`, defeated by `claude --mcp-config` loading an
+unapproved server anyway - `anthropics/claude-code#31508`, reproduced on
+v2.1.70, **closed "not planned"** - i.e. accepted current behavior for that
+mechanism, not a queued fix) - `managed-settings.md` updated with a full
+section on this, recommending the exclusive-control file over the bypassable
+allowlist.
+
+VS Code/Copilot has an analogous-sounding channel ("Copilot managed settings",
+MDM-deployed via Intune/Jamf/Group Policy, registry key
+`HKEY_LOCAL_MACHINE\SOFTWARE\Policies\GitHubCopilot`, confirmed to apply
+consistently across both VS Code and Copilot CLI) - but nothing found in this
+research confirms it locks down *hooks* specifically, as opposed to broader
+feature flags like `chat.agent.enabled` or model access. Deliberately not
+written up as deployable guidance on a guess; flagged as unconfirmed in both
+`managed-settings.md` and `connector/README.md`'s "Known open items", to be
+revisited only once actually checked against current docs the same way every
+other "built to spec vs. confirmed" claim in this project already is.
+
+### 19.2 An informational skill - explicitly not a security control
+
+Discussed and decided early in this session: a Claude Code Skill explaining
+PABEL (why reads get transparently intercepted, how to read a mixed
+accessible/`[ACCESS DENIED]` result, when to reach for `whoami`/
+`read_document`/`materialize_document` directly) is worth having, but purely
+as an onboarding/UX aid - never as enforcement. The reasoning: a Skill is
+advice a model can ignore; the `PreToolUse` hook is the only thing that's
+actually imposed regardless of what any skill says, and has been since this
+project's very first version. Giving a Skill any load-bearing security role
+would contradict "always pick the strongest enforceable option" (this
+project's own standing default) for zero benefit, and risks someone later
+loosening the hook on the mistaken belief the skill covers it.
+
+New `connector/src/pabel_connector/skills/pabel/SKILL.md`, frontmatter marked
+`security_relevant: false` and the body saying so again in its own first
+paragraph - a real risk this session had already surfaced once (§18.1: a
+subagent with no PABEL context mistook a hook deny message for a prompt
+injection attempt) made it worth over-stating rather than leaving implicit.
+Packaged *inside* the wheel (`src/pabel_connector/skills/...`, with a new
+`[tool.setuptools.package-data]` entry in `pyproject.toml`) rather than
+alongside it in the source checkout - a first attempt at a sibling
+`connector/skills/` folder was caught before shipping: nothing outside
+`src/pabel_connector/` survives into the installed wheel (confirmed by
+re-reading `pyproject.toml`'s existing `packages.find` config, same class of
+mistake as forgetting a file needs to live inside the package to be
+`importlib.resources`-loadable after install, not just present in the repo).
+`installers/claude_code.py` copies it to `.claude/skills/pabel/SKILL.md` at
+install time (and removes it on uninstall) - inherently Claude-Code-only
+since Skills aren't a cross-agent concept, not a reopening of the
+no-special-casing principle this package otherwise holds to.
+
+### 19.3 `materialize_document` - a real request, a design walked back to something smaller and more honest
+
+The user's actual ask: an explicit "read this encrypted document and make me a
+real local copy" flow, distinct from the existing "just read it, get relayed
+content in the model's context" path - useful when someone genuinely wants a
+file, not just to see the content once. The user was also explicit up front
+that the copy would eventually need reconstituting into the document's
+original format (docx, xml, ...) and that a future version might let a human
+request it directly from the server without an agent at all - both explicitly
+out of scope for this round, noted only so the design here doesn't preclude
+them later (§19.4).
+
+The harder requirement, and where this section's design history actually
+matters: the user wanted freshness enforced **mid-session**, not just
+"deleted when the session ends" - if the source document changed, or the
+user's/agent's attributes were revoked, after a local copy was made but
+before the session ended, a later touch of that copy shouldn't silently hand
+back stale or now-unauthorized content. This went through three real design
+iterations in one session, each rejected for a concrete reason rather than
+just preference:
+
+1. **First design** (proposed after a full codebase read + a second pass
+   specifically hunting for holes in it): client-side cache directory,
+   `decide()` gains a new detection category for "this call touches our own
+   materialized-copy directory," and every access transparently redoes the
+   full `read_document` relay call before allowing it through - full
+   re-verification on every touch, no server-side state, no document
+   identifier needed. Technically sound (confirmed by a dedicated design-
+   review pass that found and fixed a real bug in the first draft: caching
+   the *ciphertext* instead of the *source path* would have made "redo the
+   relay" always return the same answer, silently defeating the "detect a
+   changed source" half of the requirement) - but **rejected by the user**:
+   "once it's on disk, it's not our problem anymore." Once written, a
+   materialized copy should be an ordinary local file, not something
+   `decide()` keeps gatekeeping.
+2. **Second design**, following that correction: keep a table pairing
+   document/user/download-timestamp, and have the **server proactively push a
+   notification to the specific device** when it detects the source changed
+   after that timestamp. Researched before designing further (not assumed):
+   MCP's 2026-07-28 spec revision does support server-initiated notifications,
+   but only via a `subscriptions/listen` stream a client opts into and keeps
+   open - nothing like that exists anywhere in this connector today, which is
+   built entirely of short-lived processes (the hook subprocess exits after
+   one tool call; `mcp_local_server.py` exists only for one session's
+   duration). Real push would need a new always-on local daemon per
+   installation, plus the deployed server abandoning its deliberate
+   statelessness to start keeping a document store of its own and tracking
+   who downloaded what. **Rejected by the user** on hearing this cost: "manteniamo
+   la struttura stateless... non reinventiamo la ruota."
+3. **Final design, shipped**: `materialize_document` is a one-shot tool - read
+   through the normal relay once, write the result to a local file under
+   `~/.pabel/materialized/<agent_id>/`, done. No manifest, no source-path
+   bookkeeping, no refresh, no new `decide()` branch, no server changes at
+   all. The only guarantee left is a bound on exposure time, not continuous
+   correctness: a new Claude Code `SessionEnd` hook (a real, distinct event,
+   confirmed to fire once per session with a termination reason, separate
+   from the per-turn `Stop` event already used everywhere else in this
+   package) unconditionally purges the whole per-agent cache directory
+   regardless of why the session ended. If the source changes or attributes
+   are revoked mid-session, the existing local copy does **not** reflect
+   that until `materialize_document` is explicitly called again - stated
+   plainly as the accepted behavior, in the tool's own docstring, in
+   `connector/README.md`, and in `server/mcp_server.py`'s/`server/README.md`'s
+   own docstrings (framed there as a deliberate boundary of what a
+   deliberately stateless server can protect, not a gap nobody noticed).
+
+Implementation: `pabel_client/materialize.py` (new - `create_async()`,
+`purge_all()`), a new tool in `mcp_local_server.py`, `adapters/
+claude_code.py`'s new `handle_session_end()`, a new `SESSION_END_HANDLERS`
+dispatch table in `registry.py` (SessionEnd isn't a tool call, so it doesn't
+fit `NormalizedCall`/`Decision` and gets its own small table rather than
+forcing that shape), `hook.py`'s `main()` checking that table before
+`ADAPTERS`, and `installers/claude_code.py` writing the second `SessionEnd`
+hook entry alongside the existing `PreToolUse` one (`HOOK_KEYS` grew to two
+entries, the same multi-hook-point mechanism Cursor/Windsurf already use -
+`cli/main.py`'s uninstall/doctor commands picked this up for free via the
+existing `installer.HOOK_KEYS` iteration).
+
+### 19.4 Explicitly deferred - recorded here so they aren't silently forgotten
+
+Two ideas came up this session, both real, both deliberately not built:
+
+- **True mid-session freshness via server push**: would need the deployed
+  server to start keeping a document store and tracking who has a copy of
+  what, plus a new always-on local daemon per installation to actually
+  receive a push (see §19.3.2). A project of its own, not an extension of
+  what exists - revisit only if a real requirement makes the stateless-server
+  trade-off worth reopening.
+- **Direct human access to a decrypted document without an agent** (e.g. a
+  traditional editor asking the MCP server for a document directly) - a
+  different scope than this project manages today (agent-mediated access),
+  raised by the user as an interesting future direction, explicitly not this
+  project's perimeter right now.
+
+## 20. Turning §19.1's guide into a real tool, despite the CLI-flag bypass (2026-08-05, later session)
+
+§19.1's addendum documented a real, confirmed limitation: `allowedMcpServers`
+(the softer MCP allowlist mechanism) has a permanently-accepted CLI-flag bypass
+(`anthropics/claude-code#31508`, closed "not planned"), and `managed-settings.md`
+already recommended `managed-mcp.json`'s exclusive-control mode instead, which
+is confirmed unaffected. User instruction this session, given knowing about
+that limitation: implement the guide's recommendations as real tooling anyway
+- "pur essendoci una vulnerabilità è imperativo fornire tutti gli strumenti di
+protezione che possiamo al momento." The gap being closed here isn't the
+bypass itself (already routed around by preferring `managed-mcp.json`), but
+that the guide had previously stopped at "here is JSON to hand-type" - real
+friction that either goes stale against a future `hook_command()`/
+`mcp_server_command()` change, or gets typo'd by whoever deploys it by hand.
+
+Three additions, all admin-facing (same "admin action, run locally, never
+automated" split `server/agents_admin.py` already draws for installation
+credentials - see §12), none of them touching `core/`, `server/`, or any
+employee-facing `install` behavior:
+
+1. **`connector/src/pabel_connector/managed_settings.py`** - `generate_
+   managed_settings()`/`generate_managed_mcp()`, built from
+   `installers.base.hook_command()`/`mcp_server_command()` and
+   `installers.claude_code.HOOK_KEYS` directly (the same calls `install()`
+   itself makes), so the managed-layer JSON can't silently drift from what
+   the hook/MCP registration actually expect after some future change to
+   either. `python_path` defaults to `sys.executable` (this interpreter) but
+   that's explicitly documented as wrong for a real fleet deployment - a
+   managed-settings.json needs one fixed, machine-wide interpreter path every
+   managed device actually has, not a single developer's own venv path
+   (`base.hook_command()`'s own docstring already made this distinction for
+   the single-machine `install()` case; this generator just makes the same
+   caveat apply to the fleet case explicitly, via a required-in-practice
+   `--python-path`).
+2. **`pabel-connector generate-managed-settings`** (new CLI subcommand,
+   `cli/main.py`) - writes `managed-settings.json`/`managed-mcp.json` to
+   `--out-dir`. Prints a loud warning if `--python-path` is omitted (defaults
+   to previewing the shape with this interpreter's own path, not something to
+   actually ship). Deploys nothing itself - no registry write, no `Program
+   Files` write - deliberately: this command can run on any machine with
+   `pabel-connector` installed, not necessarily the one being managed, and
+   writing to `HKLM`/`Program Files` needs elevation this command has no
+   business requesting on its own.
+3. **`connector/deploy/Deploy-ManagedSettings.ps1`** - the actual deployment
+   step, run separately and manually, as Administrator, on the machine being
+   managed. Refuses to run without admin rights (checked explicitly, not left
+   to fail opaquely on the first privileged write). Re-validates both JSON
+   files with `ConvertFrom-Json` before writing anything - malformed JSON is
+   `managed-settings.md`'s own "the one failure mode that matters most"
+   (Claude Code silently falls back to user/project settings with no visible
+   error), so this script fails loudly before deploying anything malformed
+   rather than after. `-Mode Registry`/`-Mode File` picks where
+   `managed-settings.json` goes; `managed-mcp.json` always goes to `C:\Program
+   Files\ClaudeCode\managed-mcp.json` regardless of `-Mode` - it has no
+   registry-delivery channel at all (confirmed in §19.1's addendum, restated
+   in the script's own header so this isn't only documented in one place).
+   Supports `-WhatIf`/`SupportsShouldProcess` for the same reason every other
+   admin-facing action in this project prefers a dry-run/preview path before a
+   hard-to-reverse machine-wide write.
+
+`managed-settings.md` updated to point at the generator instead of asking an
+admin to hand-copy JSON, with the JSON blocks kept (marked "shown here for
+reference") rather than removed - useful to see what the tool produces without
+running it. `connector/README.md`'s "Known open items" section updated with
+one line pointing at both new pieces. Verified end-to-end (not just unit
+tests): ran `generate-managed-settings` with an explicit `--python-path`,
+confirmed the two output files match the JSON already shown in
+`managed-settings.md` exactly, byte for byte in shape; syntax-checked
+`Deploy-ManagedSettings.ps1` via `[System.Management.Automation.Language.
+Parser]::ParseFile` (no errors) - actually running it needs Administrator
+rights and a real managed machine, out of scope to execute from an assistant
+session, consistent with this project's standing rule that machine-wide,
+hard-to-reverse actions are handed to the user to run themselves, not
+automated. 128 pre-existing tests plus 9 new ones (`test_managed_settings.py`,
+`test_cli_generate_managed_settings.py`) - 137 total, all passing.
+
+## 21. Codex CLI + ChatGPT desktop app get real MCP registration, Gemini CLI removed (2026-08-05, later session)
 
 Three user-driven changes, on a new branch created from `main` specifically
 (`phase7-codex-chatgpt-mcp-drop-gemini`) rather than off the still-unmerged
 `phase6-managed-settings-skill-materialize`, so the two stay independently
 mergeable.
 
-**19.1 Gemini CLI removed entirely.** Not a technical gap like the others in
+**21.1 Gemini CLI removed entirely.** Not a technical gap like the others in
 `docs/known-gaps.md` - a product decision: the user no longer wants to
 support it, and declined to support its vendor-announced successor
 ("Antigravity") either. Deleted `installers/gemini_cli.py` and
@@ -1967,7 +2224,7 @@ referencing it across `installers/base.py`, `installers/vscode.py`,
 from this - Gemini CLI was UNVERIFIED, never live-tested, never depended on
 by anything else in this package.
 
-**19.2 Real research (not assumptions) into Codex CLI and the ChatGPT
+**21.2 Real research (not assumptions) into Codex CLI and the ChatGPT
 desktop app**, against `developers.openai.com/codex/mcp` and
 `learn.chatgpt.com/docs/extend/mcp`:
 
@@ -1994,7 +2251,7 @@ desktop app**, against `developers.openai.com/codex/mcp` and
   read. This is a real OpenAI product limitation, not a shortcut this
   package took.
 
-**19.3 New status value: `"mcp-only"`.** Previously, an agent was either a
+**21.3 New status value: `"mcp-only"`.** Previously, an agent was either a
 hook-based adapter (`verified`/`unverified`/`degraded`) or a pure `"gap"`
 with nothing to install at all. Codex CLI/ChatGPT desktop don't fit either:
 no hook, but a real install action exists. `cli/main.py`'s `STATUS_LABELS`
@@ -2003,7 +2260,7 @@ gained this third category rather than overloading `"gap"` to sometimes mean
 enforcement" - the same instinct that drove every other status distinction
 already in this package (`degraded` vs. `unverified`, etc.).
 
-**19.4 Shared-file naming collision, found before it could ship broken.**
+**21.4 Shared-file naming collision, found before it could ship broken.**
 The first draft had both installers register a server literally named
 `pabel-connector` - since they'd write into the identical `config.toml`,
 the second product's `install()` would silently overwrite the first's
@@ -2016,7 +2273,7 @@ shared module `installers/codex_family.py` - the "pabel" entry (the
 deployed HTTP server) has no such problem, since both callers would write
 identical content for it regardless of order.
 
-**19.5 A second real bug, caught by a failing test, not by inspection.**
+**21.5 A second real bug, caught by a failing test, not by inspection.**
 The first version of `codex_family.py` cached the resolved config path as a
 module-level constant (`CONFIG_PATH = base.global_config_path(...)`),
 evaluated once at import time. `base.global_config_path()` calls
@@ -2034,7 +2291,7 @@ that can be `--global`/home-relative must be resolved inside the function
 that uses it, never cached at module load time, in this package or
 generally.
 
-**19.6 `PABEL_SERVER_URL` baked in literally, not `${VAR}`-expanded.**
+**21.6 `PABEL_SERVER_URL` baked in literally, not `${VAR}`-expanded.**
 Every other MCP registration in this package writes `${PABEL_SERVER_URL}`
 literally into a JSON file, relying on that agent's own runtime expansion
 (confirmed for Claude Code/VS Code's `.mcp.json` convention). Nothing found
@@ -2049,7 +2306,7 @@ server entry is simply skipped (not a hard failure) with a loud, actionable
 message; the product's own `pabel-connector` tools still get registered
 either way, since they need no such value.
 
-**19.7 GLOBAL_ONLY, a new concept this package hadn't needed before.**
+**21.7 GLOBAL_ONLY, a new concept this package hadn't needed before.**
 Every previous installer either supports `--global` as an addition to a
 project-scoped default (`_supports_global`) or doesn't support it at all
 (vscode, rejected the same way). Codex CLI/ChatGPT desktop are the first
@@ -2065,7 +2322,7 @@ deliberately no `HOOK_KEYS` at all - without it, `doctor` would raise
 `AttributeError` instead of correctly skipping a product with nothing to
 check.
 
-**19.8 `tomlkit`, not the stdlib's `tomllib`.** Every JSON-based installer's
+**21.8 `tomlkit`, not the stdlib's `tomllib`.** Every JSON-based installer's
 read-merge-write discipline (`base.read_json`/`write_json`) had to be
 matched for TOML - `tomllib` is read-only (and Python 3.11+ only, while this
 package targets `>=3.10`); `tomlkit` round-trips, so an employee's own
@@ -2073,7 +2330,7 @@ hand-edited `config.toml` (other MCP servers, model settings, comments)
 survives an install()/uninstall() pass unchanged apart from the pabel
 entries themselves.
 
-**19.9 Deliberately not built, kept out of this session's scope**: no
+**21.9 Deliberately not built, kept out of this session's scope**: no
 attempt to give Codex CLI/ChatGPT desktop any form of enforcement via
 `disabled_tools` (e.g. disabling a generic file-read tool near encrypted
 documents) - considered and rejected as a fundamentally different, weaker
@@ -2083,8 +2340,8 @@ never the invisible relay UX this package is otherwise built around for
 every hook-based adapter - the same tradeoff already accepted for
 Continue.dev in `docs/known-gaps.md`).
 
-**19.10 Follow-up the same session: "no enforcement at all?"** - a fair
-pushback after §19.2-§19.9 above shipped with `status = "mcp-only"`.
+**21.10 Follow-up the same session: "no enforcement at all?"** - a fair
+pushback after §21.2-§21.9 above shipped with `status = "mcp-only"`.
 Answered plainly rather than reassured away: the CP-ABE ciphertext itself
 staying meaningless without server-derived key material (confirmed in
 `server/document.py`/`mcp_server.py` - decryption keys are never present on
@@ -2108,9 +2365,9 @@ grounds that a nudge with an explicit "this is not enforcement" disclaimer
 adds engineering surface for a benefit the disclaimer itself says not to
 rely on.
 
-## 20. A real, live install found a real, live environment-variable bug (2026-08-06, later session)
+## 22. A real, live install found a real, live environment-variable bug (2026-08-06, later session)
 
-Live-testing §19's work end-to-end (real Codex CLI + ChatGPT desktop
+Live-testing §21's work end-to-end (real Codex CLI + ChatGPT desktop
 installs, real Keycloak, real login) surfaced a genuine bug, not just a
 usability rough edge: `pabel-connector install codex-cli`/`chatgpt-desktop`
 only ever *printed* "Env vars needed" as a reminder - it never made those
@@ -2131,7 +2388,7 @@ repeatable failure class for any GUI-app-hosted MCP subprocess, not
 specific to this employee's setup.
 
 **Fix, not a workaround**: `config.toml`'s own per-server `[mcp_servers.
-<name>.env]` block (confirmed real syntax, same source as §19.2) lets
+<name>.env]` block (confirmed real syntax, same source as §21.2) lets
 `install_mcp_registration()` (`installers/codex_family.py`) capture
 whichever of `base.SHARED_ENV_VARS` are present in the *installing shell's*
 environment and write them directly into that product's own MCP server
@@ -2142,7 +2399,7 @@ for these two products: the values only ever need to be correct in the
 shell that runs `install` once, not anywhere else, ever again (until they
 change, at which point re-running `install` updates the file - same
 "bake it in, re-run to refresh" tradeoff already accepted for
-`PABEL_SERVER_URL` in §19.6, now applied to all four).
+`PABEL_SERVER_URL` in §21.6, now applied to all four).
 
 Partial capture is graceful, not a hard failure: whichever variables are
 actually set get written; missing ones are named explicitly in the
@@ -2165,3 +2422,95 @@ environment leak that stays invisible until the suite runs on a
 differently-configured machine (or, as here, is caught by noticing the
 live bug and then checking whether the tests could have caught it, and
 finding they couldn't have).
+
+## 23. Reconciling phase6 with phase7, and a Codex CLI/ChatGPT desktop Skill (2026-08-06, later session)
+
+Two separate pieces of work, done together because the second depended on
+the first being settled first: merging the still-unmerged
+`phase6-managed-settings-skill-materialize` branch forward against `main`
+(which had since gained phase7's Codex CLI/ChatGPT desktop MCP work and the
+Gemini CLI removal), then adding a Codex CLI/ChatGPT desktop Skill on top of
+the now-reconciled branch so both could ship in one merge to `main`.
+
+**23.1 The merge itself.** `git merge main` into phase6 produced only two
+real conflicts - `connector/README.md`'s "Known open items" and
+`docs/phase2-engineering-notes.md`'s own append-only log - both prose,
+resolved by keeping both sides' content rather than picking one. Everything
+else (the `gemini_cli.py` deletion, `codex_family.py`/`chatgpt_desktop.py`
+addition, `registry.py` entries) auto-merged cleanly: the two branches had
+touched disjoint areas of the same files. The log conflict needed more than
+a textual merge - both branches had independently written a "## 19." section
+(and phase6 already had a "## 20." of its own), so phase7's two sections
+were renumbered §19→§21 and §20→§22 to keep the sequence unbroken, with
+every internal cross-reference (§19.x/§20.x) inside them updated to match.
+146 connector tests + 9 server tests pass post-merge, run separately (a
+combined `pytest connector server` invocation fails - both trees have their
+own `tests/__init__.py`, so pytest's default import mode collides on the
+shared package name `tests` when given both as roots in one invocation; not
+a regression from this merge, just never previously attempted).
+
+**23.2 The Skill, reversing part of §21.10 - deliberately, not by accident.**
+§21.10 above recorded an explicit decision *against* shipping an `AGENTS.md`
+nudge file for Codex CLI/ChatGPT desktop, reasoning that a disclaimer-laden
+nudge wasn't worth the engineering surface of building a new mechanism for
+it. Re-litigated this session at the user's own request (not this package's
+initiative) after confirming, via primary sources - `developers.openai.com/
+codex/skills` (redirects to `learn.chatgpt.com/docs/build-skills`) - a fact
+that didn't hold in phase7: **Agent Skills are now a real, open, cross-vendor
+standard** (agentskills.io), and "Standalone skills are available in the
+ChatGPT desktop app, Codex CLI, and IDE extension" using the exact same
+`SKILL.md` shape (frontmatter `name`/`description`, then markdown) this
+package already built and ships for Claude Code
+(`installers/claude_code.py`). Confirmed exact paths, not guessed: repo scope
+at `$CWD/.agents/skills/` (and `$REPO_ROOT/.agents/skills/` for a nested
+subfolder), user scope at `$HOME/.agents/skills/`, admin scope at
+`/etc/codex/skills`, plus a bundled system scope - the same fetch also
+corrected an initial WebSearch-summarized guess of `~/.codex/skills/`/
+`.codex/skills/` from third-party blog posts, re-confirming this project's
+standing rule of trusting a primary-source fetch over an aggregated summary
+when the two disagree.
+
+This changes the §21.10 calculus, not the honesty of its conclusion: a
+`SKILL.md` for these two products isn't a new mechanism to build and
+maintain - it's a second, differently-worded copy of a file this package
+already has, installed to a location both products already read natively.
+Nothing about *why* a nudge can't be enforcement changed; what changed is
+that the nudge is now nearly free to ship. The user confirmed proceeding
+given this updated cost, rather than this package silently reversing its own
+prior recorded decision - asked directly rather than assumed.
+
+**23.3 What's actually different in the content, not just the file.** Naively
+copying Claude Code's `SKILL.md` would have been actively wrong: that file's
+central claim - "The actual security boundary is a `PreToolUse` hook that
+runs unconditionally on every tool call" - is false for Codex CLI/ChatGPT
+desktop, which have no hook at all (confirmed repeatedly since phase7,
+`docs/known-gaps.md`). `skills/pabel-codex/SKILL.md` is a distinct file
+(not a parameterized template) built around the opposite starting fact: a
+raw read of a gated file returns real, meaningless ciphertext here, silently
+- not a denial, not an interception, nothing to "read past." Its guidance is
+therefore "call `read_document` yourself" rather than "just read it
+normally, it's handled for you," and its closing section restates plainly
+that confidentiality depends on the CP-ABE ciphertext, never on any agent
+choosing to follow this file.
+
+**23.4 Wiring: one shared skill, in the module that already owns the shared
+file.** `installers/codex_family.py` gained `install_skill()` (mirroring
+`claude_code.py`'s `_install_skill`) rather than duplicating it in both
+`codex_cli.py` and `chatgpt_desktop.py` - same instinct that already put
+`install_mcp_registration`/`uninstall_mcp_registration` there instead of in
+each product's own module. Writes only the user-scoped location
+(`$HOME/.agents/skills/pabel/SKILL.md`), not the repo-scoped one that's also
+available - matching `GLOBAL_ONLY` on both callers, so a product doesn't end
+up with some artifacts per-project and others not. Both `codex_cli.py` and
+`chatgpt_desktop.py`'s `install()` call it alongside
+`install_mcp_registration()`; installing either product after the other
+overwrites the file with byte-identical content (one skill for this package,
+not one per product) - confirmed by a test that installs both in sequence
+and diffs the result. **Uninstall deliberately does not remove it**, on
+either product: unlike Claude Code's skill (genuinely per-installation),
+this one is shared, so `codex-cli uninstall` deleting it out from under a
+still-installed `chatgpt-desktop` would be a real regression, the same
+reasoning that already keeps the shared "pabel" deployed-server `config.toml`
+entry untouched by either product's uninstall. `pyproject.toml`'s
+package-data gained the new file's path (`skills/pabel-codex/SKILL.md`)
+alongside the existing Claude Code one. 3 new tests, 149 total, all passing.

@@ -36,3 +36,12 @@ ADAPTERS = {
     "windsurf:pre_run_command": windsurf.pre_run_command,          # DEGRADED
     "windsurf:pre_mcp_tool_use": windsurf.pre_mcp_tool_use,         # DEGRADED
 }
+
+# SessionEnd is not a tool call - no NormalizedCall/Decision shape fits it, so
+# it gets its own small dispatch table instead of an ADAPTERS entry. Claude
+# Code only, for now: the only agent this package has confirmed a SessionEnd-
+# equivalent event for (see installers/claude_code.py, pabel_client/
+# materialize.py).
+SESSION_END_HANDLERS = {
+    "claude-code:session-end": claude_code.handle_session_end,
+}

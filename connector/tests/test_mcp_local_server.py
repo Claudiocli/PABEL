@@ -93,6 +93,37 @@ def test_login_runs_browser_flow_when_not_logged_in(monkeypatch):
     assert run(mcp_local_server.login()) == {"ok": True}
 
 
+def test_materialize_document_writes_a_local_copy(monkeypatch, tmp_path):
+    monkeypatch.setattr(mcp_local_server, "AGENT_ID", "claude-code")
+    monkeypatch.setattr(mcp_local_server.materialize, "CACHE_ROOT", tmp_path / "materialized")
+
+    async def fake_read_document_with_login_async(path, name, agent_id):
+        return {"name": name, "sections": [{"name": "s1", "accessible": True, "text": "hi"}]}
+
+    # materialize.py imports read_document_with_login_async directly into its
+    # own namespace (not via `relay.`), so it must be patched there.
+    monkeypatch.setattr(mcp_local_server.materialize, "read_document_with_login_async",
+                        fake_read_document_with_login_async)
+
+    result = run(mcp_local_server.materialize_document("test.abe"))
+    assert "materialized_path" in result
+    assert result["result"]["sections"][0]["text"] == "hi"
+
+
+def test_materialize_document_reports_relay_error_instead_of_raising(monkeypatch, tmp_path):
+    monkeypatch.setattr(mcp_local_server, "AGENT_ID", "claude-code")
+    monkeypatch.setattr(mcp_local_server.materialize, "CACHE_ROOT", tmp_path / "materialized")
+
+    async def raise_relay_error(path, name, agent_id):
+        raise RelayError("connection refused")
+
+    monkeypatch.setattr(mcp_local_server.materialize, "read_document_with_login_async",
+                        raise_relay_error)
+    result = run(mcp_local_server.materialize_document("test.abe"))
+    assert result["ok"] is False
+    assert "connection refused" in result["error"]
+
+
 def test_login_reports_failure_instead_of_raising(monkeypatch):
     def raise_auth_error_no_session():
         raise AuthError("not logged in yet")

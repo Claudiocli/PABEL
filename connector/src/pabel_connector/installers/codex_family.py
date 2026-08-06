@@ -58,9 +58,33 @@ desktop/Codex CLI had already been running since before that, so neither
 picked up the change without a full restart - a real, repeatable point of
 confusion this closes entirely by making config.toml itself the only
 source of truth these two products' own tool subprocess ever needs).
+
+Also installs an informational skill (see `install_skill()` below) -
+confirmed 2026-08 against OpenAI's own docs (developers.openai.com/codex/
+skills, redirects to learn.chatgpt.com/docs/build-skills): Agent Skills are
+an open, cross-vendor standard (agentskills.io), and "Standalone skills are
+available in the ChatGPT desktop app, Codex CLI, and IDE extension" - the
+same `SKILL.md` shape (frontmatter `name`/`description`, then markdown)
+Claude Code reads via `installers/claude_code.py`. Unlike that shared
+`config.toml`, skills have a real repo-scoped location too
+(`$CWD/.agents/skills/`), but this module writes only the user-scoped one
+(`$HOME/.agents/skills/`, confirmed in the same docs) to match
+codex_cli.py's/chatgpt_desktop.py's own `GLOBAL_ONLY` - one install-scope
+concept per product, not a partial one where some artifacts are per-project
+and others aren't. This does not reverse the earlier decision
+(`docs/phase2-engineering-notes.md`, phase7's §21.10) against a bespoke
+`AGENTS.md` nudge file for these two products - that decision weighed a
+nudge's benefit against having to build and maintain a new mechanism from
+scratch; a `SKILL.md` is the same trade *except* the mechanism already
+exists, is already built for Claude Code, and both products already read it
+natively, so there is nothing left to build. The content itself is still
+honest about being non-enforcing (see `skills/pabel-codex/SKILL.md`'s own
+closing section) - same standing rule as Claude Code's skill and
+`docs/known-gaps.md`.
 """
 
 import os
+from importlib import resources
 from pathlib import Path
 
 import tomlkit
@@ -69,6 +93,7 @@ from . import base
 
 GLOBAL_CONFIG_RELATIVE_PATH = Path(".codex") / "config.toml"
 DEPLOYED_SERVER_NAME = "pabel"
+SKILL_RELATIVE_PATH = Path(".agents") / "skills" / "pabel" / "SKILL.md"
 
 
 def config_path() -> Path:
@@ -137,7 +162,38 @@ def install_mcp_registration(agent_id: str, connector_server_name: str) -> str:
     )
 
 
+def install_skill() -> str:
+    """Copy this package's own bundled skills/pabel-codex/SKILL.md (see
+    pyproject.toml's package-data entry) to the user-scoped
+    `$HOME/.agents/skills/pabel/SKILL.md` - always overwriting, same as
+    claude_code.py's `_install_skill`, so a re-install always picks up
+    whatever this version's text says. Shared by both codex_cli.py and
+    chatgpt_desktop.py's install() - installing one after the other just
+    overwrites this file with identical content, an idempotent no-op, not a
+    conflict (there is exactly one skill for this package, not one per
+    product)."""
+    skill_path = base.global_config_path(SKILL_RELATIVE_PATH)
+    skill_path.parent.mkdir(parents=True, exist_ok=True)
+    source = resources.files("pabel_connector").joinpath("skills", "pabel-codex", "SKILL.md")
+    skill_path.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    return (
+        f"Installed an informational skill (not a security control - see "
+        f"that file's own closing section) to {skill_path}, read natively by "
+        f"Codex CLI, the ChatGPT desktop app, and the IDE extension alike "
+        f"(one shared, user-scoped location, same as the config.toml entry "
+        f"above)."
+    )
+
+
 def uninstall_mcp_registration(agent_id: str, connector_server_name: str) -> str:
+    """Removes only this product's own MCP server entry from the shared
+    config.toml - never the "pabel" deployed-server entry (identical either
+    way, so removing it on one product's uninstall would just make the
+    other, still-installed product write it right back on its own next
+    install) and never the skill file `install_skill()` writes (shared by
+    both products the same way - unlike Claude Code's uninstall, which does
+    remove its own skill file since that one is genuinely per-product, not
+    shared with anything else)."""
     path = config_path()
     data = base.read_toml(path)
     servers = data.get("mcp_servers", {})

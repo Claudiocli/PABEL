@@ -31,6 +31,7 @@ import json
 import re
 
 from ..core.types import Decision, DecisionKind, NormalizedCall, RenderedResponse
+from ..pabel_client import materialize
 
 name = "claude-code"
 
@@ -83,3 +84,19 @@ def render(decision: Decision) -> RenderedResponse:
     if decision.content is not None:
         output["hookSpecificOutput"]["additionalContext"] = json.dumps(decision.content)
     return RenderedResponse(stdout=json.dumps(output))
+
+
+def handle_session_end(stdin_bytes) -> RenderedResponse:
+    """SessionEnd is not a tool call - there's no NormalizedCall/Decision to
+    build here, just unconditional cleanup of anything materialize_document
+    left behind this session (see pabel_client/materialize.py's docstring for
+    why this is the only freshness guarantee this package makes: purge on
+    session end, not continuous re-verification). Deliberately ignores the
+    payload's own "reason" field (clear/resume/logout/...) - over-purging on
+    every reason is safe, not lossy, since nothing here is meant to persist
+    across a session boundary anyway."""
+    try:
+        materialize.purge_all("claude-code")
+    except OSError as e:
+        return RenderedResponse(stderr=f"pabel-connector: materialized-cache cleanup failed: {e}\n")
+    return RenderedResponse()

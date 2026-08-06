@@ -15,9 +15,11 @@ trail after the fact.
 
 import argparse
 import getpass
+import json
 import sys
 from pathlib import Path
 
+from .. import managed_settings
 from ..installers import base
 from ..installers.registry import INSTALLERS
 from ..pabel_client import agent_session, session
@@ -149,6 +151,13 @@ def cmd_uninstall(args) -> int:
         print(f"Removed pabel hooks from {path}")
     else:
         print(f"No pabel hooks found in {path} - nothing to do.")
+
+    if hasattr(installer, "SKILL_RELATIVE_PATH"):
+        skill_path = (base.global_config_path(installer.SKILL_RELATIVE_PATH) if args.global_
+                      else Path(args.dir).resolve() / installer.SKILL_RELATIVE_PATH)
+        if skill_path.exists():
+            skill_path.unlink()
+            print(f"Removed {skill_path}")
     return 0
 
 
@@ -243,6 +252,42 @@ def cmd_doctor(args) -> int:
     return 0 if ok else 1
 
 
+def cmd_generate_managed_settings(args) -> int:
+    """Admin-facing, not part of an employee's own `install` - writes the
+    two files connector/docs/managed-settings.md tells an admin to deploy
+    to a managed machine, built from the same source `install()` itself
+    uses so they can't silently drift from what the hook/MCP registration
+    actually expect. Never touches the registry or `C:\\Program
+    Files\\ClaudeCode\\` itself - see deploy/Deploy-ManagedSettings.ps1 for
+    that step, run separately and deliberately by whoever has admin rights
+    on the target machine."""
+    out_dir = Path(args.out_dir).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = out_dir / "managed-settings.json"
+    mcp_path = out_dir / "managed-mcp.json"
+    settings_path.write_text(
+        json.dumps(managed_settings.generate_managed_settings(args.python_path), indent=2) + "\n",
+        encoding="utf-8")
+    mcp_path.write_text(
+        json.dumps(managed_settings.generate_managed_mcp(args.python_path, args.server_url), indent=2) + "\n",
+        encoding="utf-8")
+    if not args.python_path:
+        print(f"[!!] --python-path not given - used this interpreter's own path "
+              f"({sys.executable}). That's almost certainly wrong for a fleet "
+              f"deployment (see managed-settings.md); re-run with "
+              f"--python-path pointing at a machine-wide interpreter every "
+              f"managed device actually has before deploying either file.")
+    print(f"Wrote {settings_path}")
+    print(f"Wrote {mcp_path}")
+    print("\nNeither file has been deployed anywhere yet. Deploy them with "
+          "deploy/Deploy-ManagedSettings.ps1 (run as Administrator on the "
+          "target machine), or manually per connector/docs/managed-settings.md. "
+          "After deploying, verify with `/status` inside Claude Code and "
+          "`claude mcp list` - see that document for what a correct result "
+          "looks like and the one silent-failure mode to check for.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pabel-connector")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -285,6 +330,24 @@ def build_parser() -> argparse.ArgumentParser:
                                "was written into (default: cwd) - used to verify the "
                                "hook is actually wired, not just that a credential exists")
     p_doctor.set_defaults(func=cmd_doctor)
+
+    p_managed = sub.add_parser(
+        "generate-managed-settings",
+        help="admin-only: generate managed-settings.json/managed-mcp.json for Claude Code "
+             "(see connector/docs/managed-settings.md) - writes files only, deploys nothing")
+    p_managed.add_argument("--out-dir", default=".",
+                           help="directory to write managed-settings.json/managed-mcp.json into "
+                                "(default: cwd)")
+    p_managed.add_argument("--python-path", default=None,
+                           help="machine-wide Python interpreter path every managed device has "
+                                "pabel-connector installed into - required for a real fleet "
+                                "deployment; defaults to this interpreter's own path otherwise "
+                                "(fine for previewing the output shape, wrong to actually ship)")
+    p_managed.add_argument("--server-url", default=managed_settings.DEFAULT_SERVER_URL,
+                           help="value for the 'pabel' MCP server's url field - defaults to "
+                                "${PABEL_SERVER_URL}, expanded from each managed machine's own "
+                                "environment, matching .mcp.json's existing convention")
+    p_managed.set_defaults(func=cmd_generate_managed_settings)
 
     return parser
 

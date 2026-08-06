@@ -32,7 +32,9 @@ ChatGPT desktop app - confirmed via OpenAI's own docs
 (`developers.openai.com/codex/mcp`), not assumed - so `pabel-connector
 install codex-cli --global` registers `whoami`/`read_document`/
 `materialize_document` as directly-callable MCP tools even though no hook
-exists to relay a blocked read automatically. `status = "mcp-only"`, not
+exists to relay a blocked read automatically, and installs an informational
+Skill telling the model to call them (see "The one real mitigation" below).
+`status = "mcp-only"`, not
 `"gap"` - see `installers/codex_family.py` for the shared implementation
 and the naming-collision problem solved there (Codex CLI and the ChatGPT
 desktop app each get their own MCP server name in that one shared file, to
@@ -61,9 +63,11 @@ substitute a blocked read with the real decrypted result the way
 
 Same as Codex CLI: `pabel-connector install chatgpt-desktop --global`
 registers `whoami`/`read_document`/`materialize_document` as
-directly-callable MCP tools in the shared `config.toml` - `status =
-"mcp-only"`, zero enforcement, no blocking of a direct encrypted-file
-read. Kept as its own registry entry (not folded into codex-cli) so an
+directly-callable MCP tools in the shared `config.toml`, and installs the
+same informational Skill Codex CLI does (one shared file, see "The one real
+mitigation" below) - `status = "mcp-only"`, zero enforcement, no blocking of
+a direct encrypted-file read. Kept as its own registry entry (not folded
+into codex-cli) so an
 organization can authorize one product without the other via
 `server/agents_admin.py`'s per-product `required_role`, despite the shared
 file.
@@ -79,15 +83,27 @@ block-and-relay workflow - not a gap in this package's effort, a confirmed
 absence of any interception mechanism in the product itself (Codex
 CLI/ChatGPT desktop: no hook, only `disabled_tools`/`approval_mode`, which
 gate an entire tool, never substitute one call's content; Cline/Continue.dev:
-see their own sections). Codex CLI does read a documented `AGENTS.md`
-instruction file (`developers.openai.com/codex/guides/agents-md`,
-global `~/.codex/AGENTS.md` or project-scoped) that could nudge a model
-toward calling `read_document` instead of reading a document directly - but
-OpenAI's own docs describe it explicitly as "instruction rather than
-enforcement... not a security sandbox," the same honest limit already
-attached to Claude Code's informational Skill (`docs/phase2-engineering-
-notes.md` §19.2 of the earlier phase). It's a nudge a careless or
-adversarial use ignores at no cost - not treated as a fix for this gap.
+see their own sections).
+
+Codex CLI/ChatGPT desktop **do** now get an informational Skill installed
+(`installers/codex_family.py`'s `install_skill()`, `skills/pabel-codex/
+SKILL.md`) - a later reversal of an earlier call in this same file (see
+`docs/phase2-engineering-notes.md`'s §21.10) that rejected a bespoke
+`AGENTS.md` nudge specifically because building and maintaining a new
+mechanism wasn't worth a benefit its own disclaimer says not to rely on.
+What changed isn't the honesty of that disclaimer - it's the cost: Agent
+Skills are now a confirmed, open cross-vendor standard (agentskills.io) that
+Codex CLI, the ChatGPT desktop app, and the IDE extension all already read
+natively from the same `$HOME/.agents/skills/` location, using the exact
+`SKILL.md` file this package already built and ships for Claude Code. There
+was nothing left to build - just a second, differently-worded copy of a file
+that already existed, installed to a location that already gets read. The
+content is exactly as honest as before: `skills/pabel-codex/SKILL.md`'s own
+closing section states plainly that this is guidance, not a gate, and that
+confidentiality depends on the CP-ABE ciphertext itself, never on any agent
+choosing to call `read_document` instead of reading a file directly. It's
+still a nudge a careless or adversarial use ignores at no cost - not treated
+as a fix for this gap, just as before.
 
 The only thing that actually closes the gap, rather than discourage walking
 through it, is **not putting the encrypted documents on a machine that only

@@ -29,6 +29,10 @@ per-project variant here - `~/.codex/config.toml` is the one file both
 Codex CLI and the ChatGPT desktop app read, always. cli/main.py rejects
 `install codex-cli --dir .` without `--global` rather than silently writing
 somewhere neither product would ever look.
+
+Also installs an informational skill (see codex_family.install_skill()) -
+same non-enforcing content as Claude Code's, adapted for the fact that
+nothing here relays a blocked read automatically.
 """
 
 from pathlib import Path
@@ -52,7 +56,9 @@ def config_path(base_dir: Path) -> Path:
 
 
 def install(base_dir: Path, global_: bool = False) -> str:
-    return codex_family.install_mcp_registration(name, CONNECTOR_SERVER_NAME)
+    mcp_message = codex_family.install_mcp_registration(name, CONNECTOR_SERVER_NAME)
+    skill_message = codex_family.install_skill()
+    return f"{mcp_message}\n{skill_message}"
 
 
 def uninstall(base_dir: Path, global_: bool = False) -> str:

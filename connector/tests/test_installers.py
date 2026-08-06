@@ -238,6 +238,43 @@ def test_codex_cli_uninstall_removes_only_its_own_entry(tmp_path, monkeypatch):
     assert "pabel" in servers  # uninstall never touches the shared deployed-server entry
 
 
+def _codex_skill_path(tmp_path):
+    return tmp_path / ".agents" / "skills" / "pabel" / "SKILL.md"
+
+
+def test_codex_cli_install_writes_the_shared_skill_to_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    INSTALLERS["codex-cli"].install(tmp_path, global_=True)
+    text = _codex_skill_path(tmp_path).read_text()
+    assert "name: pabel" in text
+    # Content must differ from Claude Code's: no hook exists here, so the
+    # skill has to tell the model to call read_document itself.
+    assert "call `read_document` yourself" in text
+
+
+def test_chatgpt_desktop_install_writes_the_identical_shared_skill(tmp_path, monkeypatch):
+    # One skill for this package, not one per product - installing either
+    # product writes the exact same file to the exact same shared location.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("PABEL_SERVER_URL", "http://localhost:8001/mcp")
+    INSTALLERS["codex-cli"].install(tmp_path, global_=True)
+    after_codex_cli = _codex_skill_path(tmp_path).read_text()
+    INSTALLERS["chatgpt-desktop"].install(tmp_path, global_=True)
+    after_chatgpt_desktop = _codex_skill_path(tmp_path).read_text()
+    assert after_codex_cli == after_chatgpt_desktop
+
+
+def test_codex_family_uninstall_does_not_remove_the_shared_skill_file(tmp_path, monkeypatch):
+    # The skill is shared by both products (unlike each one's own MCP server
+    # entry) - uninstalling just one must not pull it out from under the
+    # other still-installed product.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    INSTALLERS["codex-cli"].install(tmp_path, global_=True)
+    INSTALLERS["chatgpt-desktop"].install(tmp_path, global_=True)
+    INSTALLERS["codex-cli"].uninstall(tmp_path, global_=True)
+    assert _codex_skill_path(tmp_path).exists()
+
+
 def test_chatgpt_desktop_status_is_mcp_only(tmp_path):
     assert INSTALLERS["chatgpt-desktop"].status == "mcp-only"
 
@@ -270,6 +307,52 @@ def test_claude_code_install_is_idempotent(tmp_path):
     INSTALLERS["claude-code"].install(tmp_path)
     data = json.loads((tmp_path / ".claude" / "settings.json").read_text())
     assert len(data["hooks"]["PreToolUse"]) == 1
+
+
+def test_claude_code_install_writes_session_end_hook(tmp_path):
+    # A real, distinct Claude Code event (fires once per session, not once
+    # per turn like Stop) - purges anything materialize_document left
+    # behind this session. See pabel_client/materialize.py.
+    INSTALLERS["claude-code"].install(tmp_path)
+    data = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    block = data["hooks"]["SessionEnd"][0]
+    entry = block["hooks"][0]
+    assert "pabel_connector.hook claude-code:session-end" in entry["command"]
+    assert entry["timeout"] == base.HOOK_TIMEOUT_SECONDS
+
+
+def test_claude_code_install_is_idempotent_for_session_end_too(tmp_path):
+    INSTALLERS["claude-code"].install(tmp_path)
+    INSTALLERS["claude-code"].install(tmp_path)
+    data = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    assert len(data["hooks"]["SessionEnd"]) == 1
+
+
+def test_claude_code_install_writes_the_informational_skill(tmp_path):
+    INSTALLERS["claude-code"].install(tmp_path)
+    skill_path = tmp_path / ".claude" / "skills" / "pabel" / "SKILL.md"
+    assert skill_path.exists()
+    text = skill_path.read_text()
+    # Never mistakable for a security control - see docs/phase2-engineering-notes.md 19.2.
+    assert "security_relevant: false" in text
+    assert "grants and\nenforces nothing itself" in text
+
+
+def test_claude_code_uninstall_also_removes_the_skill_file(tmp_path):
+    from pabel_connector.cli.main import main as cli_main
+
+    INSTALLERS["claude-code"].install(tmp_path)
+    skill_path = tmp_path / ".claude" / "skills" / "pabel" / "SKILL.md"
+    assert skill_path.exists()
+    exit_code = cli_main(["uninstall", "claude-code", "--dir", str(tmp_path)])
+    assert exit_code == 0
+    assert not skill_path.exists()
+
+
+def test_claude_code_global_install_writes_skill_to_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    INSTALLERS["claude-code"].install(tmp_path / "some-project", global_=True)
+    assert (tmp_path / ".claude" / "skills" / "pabel" / "SKILL.md").exists()
 
 
 def test_claude_code_install_registers_both_mcp_servers(tmp_path):
