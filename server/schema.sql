@@ -1,10 +1,11 @@
 -- PABEL service schema.
 --
--- user_keys / agent_keys are caches: "hash the current attribute string,
--- reuse the cached key if it still matches, regenerate otherwise" - the
--- only practical way to get key revocation given OpenABE has none natively
--- (see server/core.py). agents is the admin-managed registry of which AI
--- agent product may contribute attributes to a combined key; agent_installations
+-- agent_keys is a cache: "hash the current combined attribute string, reuse
+-- the cached key if it still matches, regenerate otherwise" - the only
+-- practical way to get key revocation given OpenABE has none natively (see
+-- server/core.py's agent_session_key()). agents is the admin-managed
+-- registry of which AI agent product may contribute attributes to a
+-- combined key; agent_installations
 -- is the admin-managed registry of which real, per-installation Keycloak client
 -- may act as a given agent_id. Both are only ever written by
 -- server/agents_admin.py, never by the running service. audit_log is a
@@ -44,14 +45,6 @@ CREATE TABLE IF NOT EXISTS agent_installations (
 );
 
 CREATE INDEX IF NOT EXISTS agent_installations_agent_id_idx ON agent_installations (agent_id);
-
-CREATE TABLE IF NOT EXISTS user_keys (
-    username        TEXT PRIMARY KEY,
-    attributes_hash TEXT NOT NULL,           -- sha256 of the exact '|'-joined attribute string
-    key_material    BYTEA NOT NULL,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-);
 
 CREATE TABLE IF NOT EXISTS agent_keys (
     username        TEXT NOT NULL,

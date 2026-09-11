@@ -1,7 +1,7 @@
 """PostgreSQL-backed storage for the PABEL service.
 
-Persists: cached user keys (auto-derived from live Keycloak attributes, see
-core.user_key), cached agent-combined keys (see core.agent_session_key), the
+Persists: cached agent-combined keys (auto-derived from live Keycloak
+attributes plus the calling agent's own, see core.agent_session_key), the
 agent product registry and the agent installation registry (both admin-managed
 only, via agents_admin.py - never written by the running service itself), and
 a queryable mirror of the audit trail (core.py also appends to audit.jsonl;
@@ -37,29 +37,6 @@ def init_schema():
 
 def hash_attributes(attribute_string):
     return hashlib.sha256(attribute_string.encode("utf-8")).hexdigest()
-
-
-# --- user keys: auto-derived cache, see core.user_key() ---------------------
-
-def get_user_key(username):
-    """(attributes_hash, key_material) or None."""
-    with connect() as conn:
-        row = conn.execute(
-            "SELECT attributes_hash, key_material FROM user_keys WHERE username = %s",
-            (username,)).fetchone()
-        return tuple(row) if row else None
-
-
-def store_user_key(username, attributes_hash, key_material):
-    with connect() as conn:
-        conn.execute(
-            "INSERT INTO user_keys (username, attributes_hash, key_material) "
-            "VALUES (%s, %s, %s) "
-            "ON CONFLICT (username) DO UPDATE SET "
-            "  attributes_hash = EXCLUDED.attributes_hash, "
-            "  key_material = EXCLUDED.key_material, "
-            "  updated_at = now()",
-            (username, attributes_hash, key_material))
 
 
 # --- agent registry: written only by agents_admin.py -------------------------

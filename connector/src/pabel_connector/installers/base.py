@@ -1,11 +1,31 @@
-"""The Strategy interface every per-agent installer implements: discovering
-and read-merge-writing that agent's own hook-config file, plus reporting
-which prerequisites (env vars, feature flags) still need setting. Kept as
-a separate axis from adapters/ (the wire-format Strategy) because
+"""Shared install-time helpers every per-agent installer module uses:
+discovering and read-merge-writing that agent's own hook-config file, plus
+reporting which prerequisites (env vars, feature flags) still need setting.
+Kept as a separate axis from adapters/ (the wire-format Strategy) because
 install-time concerns - where a config file lives, how to merge into
 existing JSON, what env vars to print - are a genuinely different concern
 that would force every adapter module to also know shell/OS install
 mechanics if the two were merged.
+
+An installer is a plain module exposing `name`/`status`, an
+`install(base_dir, global_=False) -> str` and a `required_env() -> List[str]`
+(see cli/main.py's `install`/`uninstall`/`_supports_global`/`_global_only`
+for the exact attributes actually read - nothing here enforces this shape,
+it's a convention every module in this package follows). Not every
+attribute is present on every installer:
+  - The two documented-gap installers (cline, continue_dev) have no
+    `config_path`/`HOOK_KEYS`/`GLOBAL_CONFIG_RELATIVE_PATH` at all -
+    `install()` just explains why and writes nothing (see cli/main.py's
+    `hasattr(installer, "config_path")` checks).
+  - codex_cli/chatgpt_desktop have a `config_path` (both point at the same
+    shared `~/.codex/config.toml` - see installers/codex_family.py) but no
+    `HOOK_KEYS` at all: neither product has any hook/interception mechanism,
+    only MCP tool registration - cli/main.py's `_hook_wiring_ok` skips them
+    for exactly this reason rather than crashing on a `HOOK_KEYS` that
+    doesn't exist.
+  - `GLOBAL_CONFIG_RELATIVE_PATH` only exists on installers with a confirmed
+    user-level location (see global_config_path()'s docstring) - `install()`'s
+    `global_` parameter is meaningless without it.
 
 Shared env vars every agent needs, on top of whatever install-specific
 ones an installer's required_env() adds:
@@ -26,7 +46,7 @@ never an env var: it's persisted locally once, at install time.
 import json
 import sys
 from pathlib import Path
-from typing import List, Protocol
+from typing import List
 
 import tomlkit
 
@@ -49,42 +69,6 @@ hook entry's own "timeout" field so the host doesn't kill it first - a
 number comfortably above 180s, not exact per-vendor tuning. Best-effort:
 some vendors may cap this lower themselves; nothing here can detect or
 override that, only ask for enough room."""
-
-
-class Installer(Protocol):
-    """Not every attribute/method here is present on every installer - this
-    documents the common shape, not an enforced interface (nothing in this
-    package actually type-checks against it):
-      - The two documented-gap installers (cline, continue_dev) have no
-        `config_path`/`HOOK_KEYS`/`GLOBAL_CONFIG_RELATIVE_PATH` at all -
-        `install()` just explains why and writes nothing (see cli/main.py's
-        `hasattr(installer, "config_path")` checks).
-      - codex_cli/chatgpt_desktop have a `config_path` (both point at the
-        same shared `~/.codex/config.toml` - see installers/codex_family.py)
-        but no `HOOK_KEYS` at all: neither product has any hook/interception
-        mechanism, only MCP tool registration - cli/main.py's
-        `_hook_wiring_ok` skips them for exactly this reason rather than
-        crashing on a `HOOK_KEYS` that doesn't exist.
-      - `GLOBAL_CONFIG_RELATIVE_PATH` only exists on installers with a
-        confirmed user-level location (see global_config_path()'s
-        docstring) - `install()`'s `global_` parameter is meaningless
-        without it.
-    """
-    name: str
-    status: str  # "verified" | "unverified" | "degraded" | "gap"
-
-    def install(self, base_dir: Path, global_: bool = False) -> str:
-        """Read-merge-write this agent's own hook-config file so it invokes
-        pabel-connector-hook. Returns a human-readable summary of what was
-        written and what the user still needs to do (env vars, login).
-        `global_` writes to GLOBAL_CONFIG_RELATIVE_PATH instead of
-        `base_dir` where supported - see cli/main.py's `_supports_global()`."""
-        ...
-
-    def required_env(self) -> List[str]:
-        """Env var names this agent's hook subprocess needs, beyond
-        SHARED_ENV_VARS."""
-        ...
 
 
 def hook_command(key: str) -> str:

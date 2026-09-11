@@ -58,7 +58,7 @@ neither the user nor any agent can self-modify them.
 python -c "import db; db.init_schema()"
 ```
 
-Creates `agents`, `user_keys`, `agent_keys`, `audit_log` (see
+Creates `agents`, `agent_installations`, `agent_keys`, `audit_log` (see
 `schema.sql`) if they don't already exist.
 
 ## 3. ABE authority

@@ -1,3 +1,5 @@
+import pytest
+
 import pabel_connector.core.decide as decide_module
 from pabel_connector.core.decide import decide
 from pabel_connector.core.types import DecisionKind, NormalizedCall
@@ -6,6 +8,18 @@ from pabel_connector.pabel_client.keycloak_client import AuthError
 from pabel_connector.pabel_client.relay import RelayError
 
 AGENT_ID = "claude-code"
+
+
+@pytest.fixture(autouse=True)
+def _no_real_denial_reporting(monkeypatch):
+    # Every _deny_locally() path now calls relay.report_denial() - a real
+    # network attempt (see relay.py's docstring) that, left unmocked here,
+    # made this whole file's runtime jump from ~2s to ~27s the first time
+    # this reporting was wired in (every deny test attempting a real
+    # connection with nothing to bound it before REPORT_DENIAL_TIMEOUT_SECONDS
+    # existed). Tests that care whether reporting itself happens override
+    # this with their own recording stub instead of relying on the default.
+    monkeypatch.setattr(decide_module.relay, "report_denial", lambda *a, **k: None)
 
 
 def test_allow_for_unrelated_call():
@@ -138,6 +152,87 @@ def test_deny_ambiguous_when_no_concrete_file_found():
     assert decide(call, AGENT_ID).kind == DecisionKind.DENY_AMBIGUOUS
 
 
+def test_deny_config_tamper_for_own_hook_config():
+    """The bypass this closes: nothing previously stopped a model from
+    rewriting its own agent's hook/MCP config file to change which
+    installation's credential gets used (see core/decide.py's own
+    docstring and hook.py's agent_id derivation) - or to repoint the
+    deployed server's own URL entirely."""
+    call = NormalizedCall(tool_name="Write", tool_input={"file_path": ".claude/settings.json"},
+                           is_write=True, write_target=".claude/settings.json")
+    assert decide(call, AGENT_ID).kind == DecisionKind.DENY_CONFIG_TAMPER
+
+
+def test_deny_config_tamper_for_global_config_path():
+    # A --global config path still contains the same relative fragment -
+    # see detection.py's is_pabel_hook_config_target docstring.
+    call = NormalizedCall(
+        tool_name="Write",
+        tool_input={"file_path": "C:\\Users\\alice\\.claude\\settings.json"},
+        is_write=True, write_target="C:\\Users\\alice\\.claude\\settings.json")
+    assert decide(call, AGENT_ID).kind == DecisionKind.DENY_CONFIG_TAMPER
+
+
+def test_deny_config_tamper_for_mcp_json():
+    call = NormalizedCall(tool_name="Edit", tool_input={"file_path": ".mcp.json"},
+                           is_write=True, write_target=".mcp.json")
+    assert decide(call, AGENT_ID).kind == DecisionKind.DENY_CONFIG_TAMPER
+
+
+def test_allow_write_whose_content_merely_mentions_a_hook_config_path():
+    call = NormalizedCall(
+        tool_name="Write",
+        tool_input={"file_path": "docs/notes.md", "content": "see .claude/settings.json for the hook"},
+        is_write=True, write_target="docs/notes.md")
+    assert decide(call, AGENT_ID).kind == DecisionKind.ALLOW
+
+
+@pytest.mark.parametrize("call,expected_kind", [
+    (NormalizedCall(tool_name="Read",
+                     tool_input={"file_path": str(agent_session.CREDENTIALS_FILE)}),
+     DecisionKind.DENY_CREDENTIAL_ACCESS),
+    (NormalizedCall(tool_name="Write", tool_input={"file_path": ".mcp.json"},
+                     is_write=True, write_target=".mcp.json"),
+     DecisionKind.DENY_CONFIG_TAMPER),
+    (NormalizedCall(tool_name="Write", tool_input={"file_path": "test.abe"},
+                     is_write=True, write_target="test.abe"),
+     DecisionKind.DENY_MUTATING),
+])
+def test_local_denials_are_reported_to_the_server(monkeypatch, call, expected_kind):
+    """Without this, a locally-denied call (one that never itself talks to
+    the server - unlike DENY_WITH_RELAY/DENY_AUTH_ERROR/DENY_RELAY_ERROR,
+    already audited server-side as a side effect of the real attempt) would
+    leave no record anywhere at all - see relay.report_denial's docstring."""
+    calls = []
+    monkeypatch.setattr(decide_module.relay, "report_denial",
+                        lambda *args: calls.append(args))
+    decision = decide(call, AGENT_ID)
+    assert decision.kind == expected_kind
+    assert len(calls) == 1
+    agent_id, decision_kind, reason, tool_name = calls[0]
+    assert agent_id == AGENT_ID
+    assert decision_kind == expected_kind.name
+    assert reason == decision.reason
+    assert tool_name == call.tool_name
+
+
+def test_relay_path_decisions_are_not_reported_locally(tmp_path, monkeypatch):
+    """DENY_WITH_RELAY already reaches the server via the real
+    read_document_with_login call it makes - reporting it again here would
+    be a duplicate audit entry, not a fix for a gap."""
+    target = tmp_path / "test.abe"
+    target.write_text("ciphertext")
+    monkeypatch.setattr(decide_module, "read_document_with_login",
+                        lambda path, name, agent_id: {"sections": ["ok"]})
+    calls = []
+    monkeypatch.setattr(decide_module.relay, "report_denial",
+                        lambda *args: calls.append(args))
+    call = NormalizedCall(tool_name="Read", tool_input={"file_path": str(target)})
+    decision = decide(call, AGENT_ID)
+    assert decision.kind == DecisionKind.DENY_WITH_RELAY
+    assert calls == []
+
+
 def test_deny_with_relay_on_successful_read(tmp_path, monkeypatch):
     target = tmp_path / "test.abe"
     target.write_text("ciphertext")
@@ -180,3 +275,75 @@ def test_deny_relay_error_when_server_unreachable(tmp_path, monkeypatch):
     monkeypatch.setattr(decide_module, "read_document_with_login", raise_relay_error)
     call = NormalizedCall(tool_name="Read", tool_input={"file_path": str(target)})
     assert decide(call, AGENT_ID).kind == DecisionKind.DENY_RELAY_ERROR
+
+
+# --- pabel_client.audit_log wiring: the local, confidentiality-only log ----
+# Distinct from relay.report_denial (server-side) - see decide.py's own
+# docstring for why both exist. The autouse fixture above only mocks
+# report_denial; audit_log.append_entry is safe to leave real in every
+# other test here since it's already a silent no-op with no public key
+# installed (confirmed by test_audit_log.py) - these tests mock it
+# explicitly only where they need to assert it was actually called.
+
+def test_local_denials_are_also_logged_locally(monkeypatch):
+    calls = []
+    monkeypatch.setattr(decide_module.audit_log, "append_entry",
+                        lambda *args: calls.append(args))
+    call = NormalizedCall(tool_name="Write", tool_input={"file_path": ".mcp.json"},
+                          is_write=True, write_target=".mcp.json")
+    decision = decide(call, AGENT_ID)
+    assert decision.kind == DecisionKind.DENY_CONFIG_TAMPER
+    assert len(calls) == 1
+    agent_id, tool_name, decision_kind, target, reason = calls[0]
+    assert (agent_id, tool_name, decision_kind, target, reason) == \
+        (AGENT_ID, "Write", "DENY_CONFIG_TAMPER", ".mcp.json", decision.reason)
+
+
+def test_relay_outcomes_are_logged_locally_unlike_server_reporting(tmp_path, monkeypatch):
+    # The one place local logging and server reporting deliberately diverge:
+    # report_denial skips this path (already server-audited via the real
+    # read_document attempt), but audit_log.append_entry does not - the two
+    # logs answer different questions, see decide.py's own docstring.
+    target = tmp_path / "test.abe"
+    target.write_text("ciphertext")
+    fake_result = {"sections": ["ok"]}
+    monkeypatch.setattr(decide_module, "read_document_with_login",
+                        lambda path, name, agent_id: fake_result)
+    calls = []
+    monkeypatch.setattr(decide_module.audit_log, "append_entry",
+                        lambda *args: calls.append(args))
+
+    call = NormalizedCall(tool_name="Read", tool_input={"file_path": str(target)})
+    decision = decide(call, AGENT_ID)
+    assert decision.kind == DecisionKind.DENY_WITH_RELAY
+    assert len(calls) == 1
+    assert calls[0][0] == AGENT_ID
+    assert calls[0][2] == "DENY_WITH_RELAY"
+    assert calls[0][3] == str(target)
+
+
+def test_direct_mcp_calls_are_logged_locally(monkeypatch):
+    calls = []
+    monkeypatch.setattr(decide_module.audit_log, "append_entry",
+                        lambda *args: calls.append(args))
+    monkeypatch.setattr(decide_module.agent_session, "access_token", lambda agent_id: "tok")
+    call = NormalizedCall(tool_name="mcp__pabel__whoami",
+                          tool_input={"agent_token_placeholder": True},
+                          mcp_target=("pabel", "whoami"))
+    decision = decide(call, AGENT_ID)
+    assert decision.kind == DecisionKind.ALLOW
+    assert len(calls) == 1
+    assert calls[0][0] == AGENT_ID
+    assert calls[0][2] == "ALLOW"
+    assert calls[0][3] == "whoami"
+
+
+def test_unrelated_calls_are_not_logged_locally_at_all(monkeypatch):
+    # The whole point of scoping this to "PABEL-relevant" outcomes: an
+    # agent's routine, everyday tool calls must not all end up in this log.
+    calls = []
+    monkeypatch.setattr(decide_module.audit_log, "append_entry",
+                        lambda *args: calls.append(args))
+    call = NormalizedCall(tool_name="Read", tool_input={"file_path": "/repo/README.md"})
+    assert decide(call, AGENT_ID).kind == DecisionKind.ALLOW
+    assert calls == []

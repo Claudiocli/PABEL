@@ -7,6 +7,79 @@ explanation rather than silently no-op-ing or erroring confusingly. Two more
 either, but a real install action exists for MCP tool registration - see
 their own sections below for why that split exists.
 
+## Encrypting/authoring .abe documents
+
+Not a gap this codebase intends to close - a deliberate scope decision,
+confirmed with the user. This project (both `server/` and `connector/`)
+only ever *decrypts*: `server/abe.py` wraps `oabe_setup`/`oabe_keygen`/
+`oabe_dec`, never `oabe_enc`, and `server/mcp_server.py`'s own docstring
+states plainly "this server keeps no way to write or encrypt anything."
+
+Producing a new `.abe` document in the first place - encrypting plaintext
+under a CP-ABE policy, deciding what that policy should be, and getting the
+result into whatever location `documents/`-style folders this deployment
+actually uses - is the deploying company's own responsibility, not
+something `pabel-connector`/the PABEL server offer a tool for. This was
+briefly reconsidered (an unused `encrypt_bytes()` helper existed in
+`server/abe.py`, wrapping `oabe_enc`, from early exploration) and removed
+once confirmed out of scope - see `docs/phase2-engineering-notes.md` for
+when and why.
+
+**Revisit when**: never, unless this project's own scope changes - this
+isn't a technical limitation like every other section in this file, it's a
+boundary the user drew intentionally between "gating access to already-
+encrypted documents" (this project) and "producing them" (the company's
+own process/tooling, however it chooses to build that).
+
+## Client-side audit log
+
+`pabel_client/audit_log.py` (opt-in: `pabel-connector install <agent>
+--audit-public-key <path>`) writes a local, RSA-OAEP+AES-256-GCM-encrypted
+log of every PABEL-relevant `core/decide.py` outcome - every `DENY_*`, plus
+a direct call to `pabel`'s/`mcp_local_server.py`'s own tools. Deliberately
+narrower than "every tool call this agent makes": logging routine,
+PABEL-unrelated activity was explicitly ruled out as out of scope for this
+feature, the same kind of scope boundary as the section above.
+
+**What this guarantees, and what it explicitly does not.** This is a
+confidentiality control, not an integrity or anti-tampering one, and cannot
+be made into one: whatever process can legitimately append a new entry
+(this installation's own hook subprocess, running with the same OS-level
+permissions as the agent it's recording) can, by the same access, delete
+the log file, stop it from ever being written to again, or - since it must
+hold the public key to encrypt at all - write a fabricated entry that
+decrypts exactly as cleanly as a real one. No local file, encrypted or not,
+can be tamper-evident against the very process that legitimately writes to
+it; that property exists only for `relay.report_denial()` (a real network
+call to the deployed server's own audit trail, which the agent has no write
+access to after the fact), never for anything persisted client-side. This
+log exists for a narrower, real purpose: confidentiality against a *third
+party* who later gets hold of the file (a stolen laptop, a backup, a
+misconfigured file share), and - for a company that has independently
+secured the endpoint itself (file permissions, EDR - the same "IT/
+Cybersecurity owns the machine" boundary this file already draws elsewhere
+for the credential store) - the ability to cross-reference an employee's
+local timeline against the server's own authoritative audit trail for the
+same events.
+
+**Key management is explicitly out of this project's hands.** One
+company-wide RSA keypair (`server/agents_admin.py generate-audit-keypair`),
+not one per machine - this log's threat model doesn't call for per-endpoint
+revocation, and a keypair per machine would only add IT's own key-tracking
+burden for no corresponding benefit. The private key never touches
+Keycloak, Postgres, or the running PABEL server; storing it (a vault, an
+HSM, whatever the company's own secrets-management policy already is) is
+squarely the same "company/IT scope" boundary as endpoint file permissions
+elsewhere in this project - `pabel-connector`/the PABEL server offer the
+keypair generation and decryption tooling (`agents_admin.py
+decrypt-audit-log`), never key custody itself.
+
+**Revisit when**: never, for the tamper-resistance property specifically -
+see above, it's a structural impossibility for a local file, not a gap this
+project failed to close. The confidentiality property could later be
+extended (e.g. per-machine keys, if a real need for per-endpoint revocation
+emerges) without changing the core design.
+
 ## OpenAI Codex CLI
 
 Shipped as DEGRADED (Bash-only coverage) until a 2026-08 doc/issue-tracker

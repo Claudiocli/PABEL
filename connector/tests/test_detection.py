@@ -2,6 +2,7 @@ from pabel_connector.core.detection import (
     find_relayable_file,
     invokes_oabe_binary,
     invokes_pabel_connector_internals,
+    is_pabel_hook_config_target,
     mentions_target,
     touches_pabel_credential_store,
 )
@@ -95,6 +96,64 @@ def test_invokes_pabel_connector_internals_allowed_inside_source_checkout():
     assert not invokes_pabel_connector_internals({"command": command})
 
 
+def test_invokes_pabel_connector_internals_blocked_for_the_hyphenated_hook_binary(
+        tmp_path, monkeypatch):
+    """Regression test for the gap found while explaining why hardcoding an
+    adapter's own agent_id is safe once DENY_CONFIG_TAMPER exists: running
+    the *installed console script* `pabel-connector-hook` directly with a
+    hand-picked key achieves the same bypass as importing pabel_connector's
+    modules does, but the underscore-only regex used to miss it entirely -
+    a hyphen is a non-word character, so "pabel-connector-hook" never
+    contains the substring "pabel_connector" at all."""
+    monkeypatch.chdir(tmp_path)
+    command = "pabel-connector-hook cursor:beforeReadFile"
+    assert invokes_pabel_connector_internals({"command": command})
+
+
+def test_invokes_pabel_connector_internals_allows_the_plain_cli_everywhere():
+    # install/uninstall/login/doctor need a real, already-admin-issued
+    # client_secret to matter and never let a caller pick decide()'s
+    # agent_id at call time - unlike -hook, folding this in would just
+    # block routine CLI usage.
+    assert not invokes_pabel_connector_internals({"command": "pabel-connector doctor"})
+
+
 def test_invokes_pabel_connector_internals_ignores_unrelated_command(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert not invokes_pabel_connector_internals({"command": "ls -la"})
+
+
+def test_is_pabel_hook_config_target_matches_every_hook_based_installer():
+    # One per hook-based installer's own CONFIG_RELATIVE_PATH/
+    # MCP_CONFIG_RELATIVE_PATH/GLOBAL_CONFIG_RELATIVE_PATH - codex_family.py
+    # (Codex CLI/ChatGPT desktop) deliberately absent, same reason it has no
+    # ADAPTERS entry (see this function's own docstring).
+    for path in [
+        ".claude/settings.json",
+        ".mcp.json",
+        ".github/hooks/pabel.json",
+        ".vscode/mcp.json",
+        ".github/hooks/pabel-copilot-cli.json",
+        ".copilot/hooks/pabel-copilot-cli.json",
+        ".cursor/hooks.json",
+        ".windsurf/hooks.json",
+        ".codeium/windsurf/hooks.json",
+    ]:
+        assert is_pabel_hook_config_target(path), path
+
+
+def test_is_pabel_hook_config_target_matches_windows_separators():
+    assert is_pabel_hook_config_target("C:\\repo\\.claude\\settings.json")
+
+
+def test_is_pabel_hook_config_target_matches_a_global_home_relative_path():
+    # A --global install's absolute path still contains the same relative
+    # fragment - see this function's own docstring for why that's enough
+    # without decide() ever needing to know base_dir.
+    assert is_pabel_hook_config_target("C:\\Users\\alice\\.claude\\settings.json")
+
+
+def test_is_pabel_hook_config_target_ignores_unrelated_paths():
+    assert not is_pabel_hook_config_target("/repo/README.md")
+    assert not is_pabel_hook_config_target("")
+    assert not is_pabel_hook_config_target(None)

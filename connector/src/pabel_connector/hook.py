@@ -35,12 +35,21 @@ def main(argv=None):
     if adapter is None:
         sys.stderr.write(f"pabel-connector-hook: unknown agent key {key!r}\n")
         return 2
-    # Multi-hook-point agents register several keys, one per hook point,
-    # formatted "<agent>:<hookpoint>" (see registry.py) - the agent_id this
-    # installation was enrolled under (agent_session.py's storage key) is
-    # always just the part before the colon, single-hook-point agents
-    # included (their key already equals their plain agent_id).
-    agent_id = key.split(":", 1)[0]
+    # Deliberately re-derived from the resolved adapter's own `.name`, never
+    # from the raw `key` string on its own: `key` is whatever argument this
+    # agent's hook config file happens to hold, which is exactly what
+    # core/decide.py's DENY_CONFIG_TAMPER now protects from being rewritten,
+    # but that check lives in the credential-lookup path, not here - reading
+    # agent_id back off the adapter that ADAPTERS[key] actually resolved to
+    # (never a second, independent parse of the same string) means the two
+    # can't drift apart even if this dispatch logic changes later. Multi-hook-
+    # point agents register several keys, one per hook point, formatted
+    # "<agent>:<hookpoint>" (see registry.py) with a matching `.name` on each
+    # one's Adapter instance - the agent_id this installation was enrolled
+    # under (agent_session.py's storage key) is always just the part before
+    # the colon, single-hook-point agents included (their `.name` already
+    # equals their plain agent_id).
+    agent_id = adapter.name.split(":", 1)[0]
 
     stdin_bytes = sys.stdin.buffer.read()
     call = adapter.parse(rest, stdin_bytes)

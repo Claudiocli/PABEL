@@ -1,6 +1,6 @@
 import pabel_connector.pabel_client.relay as relay_module
 from pabel_connector.pabel_client.keycloak_client import AuthError
-from pabel_connector.pabel_client.relay import RelayError, read_document_with_login
+from pabel_connector.pabel_client.relay import RelayError, read_document_with_login, report_denial
 
 AGENT_ID = "claude-code"
 
@@ -92,3 +92,47 @@ def test_still_unauthenticated_after_successful_login_is_reported_distinctly(mon
 # test_mcp_local_server.py, which patches the _async names specifically
 # and calls the tool handlers the way FastMCP actually does - no separate
 # test needed here for the same scenario.
+
+
+def test_report_denial_calls_the_server_tool_when_a_credential_exists(monkeypatch):
+    monkeypatch.setattr(relay_module.agent_session, "access_token", lambda agent_id: "tok")
+    calls = []
+
+    async def fake_relay_call_async(tool_name, arguments):
+        calls.append((tool_name, arguments))
+
+    monkeypatch.setattr(relay_module, "_relay_call_async", fake_relay_call_async)
+    report_denial(AGENT_ID, "DENY_CONFIG_TAMPER", "some reason", "Write")
+    assert calls == [("report_denial", {
+        "agent_token": "tok", "decision_kind": "DENY_CONFIG_TAMPER",
+        "reason": "some reason", "tool_name": "Write"})]
+
+
+def test_report_denial_never_raises_when_no_credential_is_stored(monkeypatch):
+    def raise_auth_error(agent_id):
+        raise AuthError("no installation credentials stored")
+
+    monkeypatch.setattr(relay_module.agent_session, "access_token", raise_auth_error)
+    report_denial(AGENT_ID, "DENY_MUTATING", "some reason", "Write")  # must not raise
+
+
+def test_report_denial_never_raises_when_the_server_is_unreachable(monkeypatch):
+    monkeypatch.setattr(relay_module.agent_session, "access_token", lambda agent_id: "tok")
+
+    async def raise_relay_error(tool_name, arguments):
+        raise RelayError("connection refused")
+
+    monkeypatch.setattr(relay_module, "_relay_call_async", raise_relay_error)
+    report_denial(AGENT_ID, "DENY_MUTATING", "some reason", "Write")  # must not raise
+
+
+def test_report_denial_never_raises_on_timeout(monkeypatch):
+    monkeypatch.setattr(relay_module, "REPORT_DENIAL_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(relay_module.agent_session, "access_token", lambda agent_id: "tok")
+
+    async def hang_forever(tool_name, arguments):
+        import anyio
+        await anyio.sleep(5)
+
+    monkeypatch.setattr(relay_module, "_relay_call_async", hang_forever)
+    report_denial(AGENT_ID, "DENY_MUTATING", "some reason", "Write")  # must not raise or hang

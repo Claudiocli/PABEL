@@ -1,12 +1,17 @@
 """Thin wrapper around the OpenABE command-line tools (oabe_*).
 
 Every operation shells out to the CLI: oabe_setup / oabe_keygen for the
-authority and per-(user, agent) keys, oabe_enc / oabe_dec for document
+authority and per-(user, agent) keys, oabe_dec to decrypt document
 sections. Key material and ciphertext are always handled as bytes at the
 call site (server/core.py) - this module only ever touches the filesystem
 for the CLI's own temp input/output files, which it deletes immediately
 after reading, since Postgres (not the filesystem) is the persistent store
 for keys.
+
+Deliberately decrypt-only: encrypting/authoring a new .abe document (what
+oabe_enc would wrap) is explicitly out of scope for this project - see
+docs/known-gaps.md's "Encrypting/authoring .abe documents" section for why
+this is the company's own responsibility, not a gap in this codebase.
 
 The executables are looked up in PATH first, then via OPENABE_BIN_DIR (see
 .env.example) - there is no relative-path guess between this project and
@@ -29,11 +34,11 @@ AUTHORITY = "org"
 
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-# Prefixes used by keygen()/decrypt_bytes()/encrypt_bytes() below for their
-# short-lived temp files - each already deletes its own in a `finally`
-# block, success or failure. This list is only a crash-recovery net (e.g.
-# the process gets killed mid-request) - see cleanup_stale_temp_files().
-TEMP_FILE_PREFIXES = ("abe_key_", "abe_ct_", "abe_pt_", "abe_enc_")
+# Prefixes used by keygen()/decrypt_bytes() below for their short-lived temp
+# files - each already deletes its own in a `finally` block, success or
+# failure. This list is only a crash-recovery net (e.g. the process gets
+# killed mid-request) - see cleanup_stale_temp_files().
+TEMP_FILE_PREFIXES = ("abe_key_", "abe_ct_", "abe_pt_")
 
 
 def cleanup_stale_temp_files(max_age_seconds=300):
@@ -132,24 +137,3 @@ def decrypt_bytes(key_bytes, ciphertext):
         for p in (key_path, ct_path, out_path):
             if os.path.exists(p):
                 os.remove(p)
-
-
-def encrypt_bytes(text, policy):
-    """Encrypt text under an ABE policy and return the raw ciphertext bytes."""
-    in_fd, in_path = tempfile.mkstemp(suffix=".txt", prefix="abe_enc_")
-    out_fd, out_path = tempfile.mkstemp(suffix=".cpabe", prefix="abe_ct_")
-    os.close(out_fd)
-    os.remove(out_path)
-    try:
-        with os.fdopen(in_fd, "w", encoding="utf-8", newline="") as f:
-            f.write(text)
-        _run("oabe_enc", ["-s", "CP", "-p", AUTHORITY, "-e", policy,
-                          "-i", in_path, "-o", out_path])
-        if not os.path.exists(out_path):
-            raise RuntimeError(f"encryption failed for policy: {policy!r}")
-        return Path(out_path).read_bytes()
-    finally:
-        if os.path.exists(in_path):
-            os.remove(in_path)
-        if os.path.exists(out_path):
-            os.remove(out_path)

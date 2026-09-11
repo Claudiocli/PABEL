@@ -45,16 +45,37 @@ Usage:
   python agents_admin.py list-installations [AGENT_ID]
   python agents_admin.py revoke-installation CLIENT_ID
   python agents_admin.py enable-installation CLIENT_ID
+
+  python agents_admin.py generate-audit-keypair --out-dir DIR
+      One company-wide RSA keypair (not one per machine/agent) for
+      connector/pabel_client/audit_log.py's client-side, confidentiality-
+      only encrypted log. Writes audit_private_key.pem (keep this - only
+      IT/whoever runs this command should ever hold it; never commit it,
+      never put it on the running PABEL server) and audit_public_key.pem
+      (hand this to employees, for `pabel-connector install --audit-
+      public-key ...`) to DIR.
+  python agents_admin.py decrypt-audit-log LOG_FILE --private-key KEY_FILE
+      Decrypts one of those logs, one JSON entry per line, to stdout.
 """
 
 import argparse
+import base64
+import json
 import secrets
 import sys
+from pathlib import Path
 
 import requests
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 import db
 import env
+
+_OAEP_PADDING = padding.OAEP(
+    mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
+_AUDIT_KEY_SIZE = 3072
 
 
 def _admin_token():
@@ -184,6 +205,62 @@ def do_set_installation_revoked(client_id, revoked):
     print(f"installation {client_id!r} {'revoked' if revoked else 're-enabled'}")
 
 
+def do_generate_audit_keypair(out_dir):
+    """One company-wide keypair, generated locally by whoever runs this -
+    never touches Keycloak, Postgres, or the running PABEL server (unlike
+    every other command in this file, which all manage server-side state).
+    Deliberately not per-machine: connector/pabel_client/audit_log.py's log
+    exists for confidentiality against a third party who later finds the
+    file, not per-endpoint access control, so one shared keypair is enough
+    and avoids IT having to track one private key per employee."""
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=_AUDIT_KEY_SIZE)
+    private_path = out / "audit_private_key.pem"
+    public_path = out / "audit_public_key.pem"
+    private_path.write_bytes(private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()))
+    public_path.write_bytes(private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo))
+    print(f"Wrote {private_path} and {public_path}.")
+    print(f"[!!] {private_path} decrypts every employee's audit log using this "
+         f"keypair - keep it off the running PABEL server entirely, store it the "
+         f"way your company stores any other decryption-capable secret (a vault, "
+         f"an HSM, whatever your own policy requires), and never commit it. Hand "
+         f"only {public_path} to employees, for "
+         f"`pabel-connector install <agent> --audit-public-key {public_path}`.")
+
+
+def _decrypt_audit_entry(private_key, line):
+    raw = base64.b64decode(line)
+    key_len = int.from_bytes(raw[:2], "big")
+    wrapped_key = raw[2:2 + key_len]
+    nonce = raw[2 + key_len:2 + key_len + 12]
+    ciphertext = raw[2 + key_len + 12:]
+    aes_key = private_key.decrypt(wrapped_key, _OAEP_PADDING)
+    plaintext = AESGCM(aes_key).decrypt(nonce, ciphertext, None)
+    return json.loads(plaintext)
+
+
+def do_decrypt_audit_log(log_file, private_key_path):
+    private_key = serialization.load_pem_private_key(
+        Path(private_key_path).read_bytes(), password=None)
+    lines = Path(log_file).read_text(encoding="ascii").splitlines()
+    for i, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        try:
+            entry = _decrypt_audit_entry(private_key, line)
+        except Exception as e:
+            print(f"[!!] line {i}: could not decrypt/parse ({e}) - "
+                 f"skipped, not silently dropped", file=sys.stderr)
+            continue
+        print(json.dumps(entry))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -216,6 +293,17 @@ def main(argv=None):
     p = sub.add_parser("enable-installation", help="re-enable a revoked installation")
     p.add_argument("client_id")
 
+    p = sub.add_parser("generate-audit-keypair",
+                       help="generate the one company-wide keypair for the connector's "
+                            "client-side, confidentiality-only encrypted audit log")
+    p.add_argument("--out-dir", default=".", help="directory to write both .pem files into")
+
+    p = sub.add_parser("decrypt-audit-log",
+                       help="decrypt one employee's client-side audit log to stdout, "
+                            "one JSON entry per line")
+    p.add_argument("log_file")
+    p.add_argument("--private-key", required=True, help="path to audit_private_key.pem")
+
     args = parser.parse_args(argv)
     try:
         if args.command == "add":
@@ -234,6 +322,10 @@ def main(argv=None):
             do_set_installation_revoked(args.client_id, True)
         elif args.command == "enable-installation":
             do_set_installation_revoked(args.client_id, False)
+        elif args.command == "generate-audit-keypair":
+            do_generate_audit_keypair(args.out_dir)
+        elif args.command == "decrypt-audit-log":
+            do_decrypt_audit_log(args.log_file, args.private_key)
     except Exception as e:
         raise SystemExit(f"error: {e}")
 

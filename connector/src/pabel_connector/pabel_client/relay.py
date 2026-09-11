@@ -136,3 +136,54 @@ async def read_document_with_login_async(path, name, agent_id):
 def read_document_with_login(path, name, agent_id):
     """Sync wrapper - see read_document()'s docstring."""
     return anyio.run(read_document_with_login_async, path, name, agent_id)
+
+
+REPORT_DENIAL_TIMEOUT_SECONDS = 3
+"""Deliberately much shorter than installers/base.py's HOOK_TIMEOUT_SECONDS
+(200s): that budget exists for a real, expected-to-be-slow operation (an
+interactive browser+MFA login a human is actively completing). This one is
+best-effort background bookkeeping for an operation the hook is about to
+deny anyway - every locally-denied tool call would otherwise pay however
+long a full network round-trip (or a hung connection to an unreachable
+server) takes before the calling agent even sees the deny response, turning
+routine local enforcement (e.g. DENY_AMBIGUOUS on a plain typo) into a
+multi-second stall. Confirmed necessary live: the full connector test suite
+went from ~2s to ~27s the first time this reporting was wired in, entirely
+from decide()-path tests each attempting a real connection attempt with no
+bound at all."""
+
+
+async def report_denial_async(agent_id, decision_kind, reason, tool_name):
+    """Best-effort audit trail for a call core/decide.py denied entirely
+    client-side - one that never reaches read_document/whoami at all (e.g.
+    DENY_CREDENTIAL_ACCESS, DENY_HOOK_BYPASS, DENY_CONFIG_TAMPER). Without
+    this, such an attempt leaves no record anywhere: every other deny path
+    either never talks to the server, or (DENY_WITH_RELAY/DENY_AUTH_ERROR/
+    DENY_RELAY_ERROR) already gets audited server-side as a side effect of
+    the real read_document attempt inside read_document_with_login above.
+
+    Deliberately swallows every failure - a missing/invalid agent
+    credential, no PABEL_SERVER_URL, no human login yet, an unreachable or
+    slow-to-respond server (bounded by REPORT_DENIAL_TIMEOUT_SECONDS above).
+    decide() has already produced its Decision by the time this runs;
+    nothing here may change or meaningfully delay what the calling agent
+    gets back, only best-effort record that the attempt happened at all."""
+    try:
+        with anyio.fail_after(REPORT_DENIAL_TIMEOUT_SECONDS):
+            agent_token = agent_session.access_token(agent_id)
+            await _relay_call_async("report_denial", {
+                "agent_token": agent_token, "decision_kind": decision_kind,
+                "reason": reason, "tool_name": tool_name or ""})
+    except Exception:
+        pass
+
+
+def report_denial(agent_id, decision_kind, reason, tool_name=""):
+    """Sync wrapper - see report_denial_async's docstring. The outer
+    try/except is belt-and-braces around anyio.run() itself (e.g. if it's
+    ever called from inside an existing event loop) - report_denial_async
+    already swallows everything it can reach on its own."""
+    try:
+        anyio.run(report_denial_async, agent_id, decision_kind, reason, tool_name)
+    except Exception:
+        pass

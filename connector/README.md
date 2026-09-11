@@ -156,6 +156,13 @@ what proves *which installation* is calling on every relay - see
 `server/README.md` and `docs/phase2-engineering-notes.md` for why a single
 shared server can no longer just trust whichever URL it was reached at.
 
+`--audit-public-key <path>` is optional and separate from the above: turns
+on a local, encrypted, confidentiality-only log of PABEL-relevant decisions
+(`docs/known-gaps.md`'s "Client-side audit log" section - what it does and
+does not guarantee) using a company-wide keypair your admin generates once
+(`server/agents_admin.py generate-audit-keypair`). Omit it to leave this
+feature off, the default.
+
 ## Configure
 
 Every agent needs the same environment variables (the installer prints

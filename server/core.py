@@ -290,30 +290,14 @@ def resolve_agent(agent_token, user_roles):
     return installation["agent_id"], agent["attributes"]
 
 
-def user_key(username, user_attributes):
-    """The ABE key for username's current Keycloak attributes, regenerating
-    it when they've drifted since the last call. OpenABE has no native key
-    revocation (confirmed against its source), so this hash-and-compare
-    against db.get_user_key()'s cache is the only way a Keycloak-side
-    attribute change ever takes effect."""
-    if not user_attributes:
-        raise AuthError(
-            f"{username!r} has no ABE attributes assigned - ask a Keycloak "
-            "realm admin to add some (User Profile: abe_attributes)")
-    joined = "|".join(user_attributes)
-    attributes_hash = db.hash_attributes(joined)
-    cached = db.get_user_key(username)
-    if cached and cached[0] == attributes_hash:
-        return cached[1]
-    key_bytes = abe.keygen(joined)
-    db.store_user_key(username, attributes_hash, key_bytes)
-    return key_bytes
-
-
 def agent_session_key(username, user_attributes, agent_id, agent_attributes):
     """The combined (user, agent) ABE key: satisfies only a policy that
-    both the human's and the agent's attributes together satisfy. Same
-    drift-detection/regeneration pattern as user_key(), cached per pair.
+    both the human's and the agent's attributes together satisfy. Regenerated
+    whenever the hashed attribute string has drifted since the last call -
+    OpenABE has no native key revocation (confirmed against its source), so
+    this hash-and-compare against db.get_agent_key()'s cache is the only way
+    a Keycloak-side attribute change ever takes effect. Cached per (username,
+    agent_id) pair.
 
     agent_attributes may be "" (resolve_agent() found a known agent this
     user isn't authorized for) - the combined key then carries only the

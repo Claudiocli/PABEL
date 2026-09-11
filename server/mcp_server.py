@@ -61,6 +61,7 @@ from mcp.server.fastmcp import FastMCP
 import abe
 import core
 import env
+from auth import AuthError
 from token_verifier import KeycloakTokenVerifier
 
 abe.cleanup_stale_temp_files()  # crash-recovery sweep, see abe.py
@@ -144,6 +145,42 @@ def read_document(content: str, agent_token: str, name: str = "document") -> dic
         return {"document": name, "user": username, "agent": agent_id,
                 "readable_sections": readable, "total_sections": len(sections),
                 "sections": sections}
+
+
+@mcp.tool()
+def report_denial(agent_token: str, decision_kind: str, reason: str, tool_name: str = "") -> dict:
+    """Records, in the same audit trail as every other operation, a tool
+    call this installation's own local enforcement (connector's
+    core/decide.py) denied entirely client-side - one that never reaches
+    read_document/whoami at all (DENY_CREDENTIAL_ACCESS, DENY_HOOK_BYPASS,
+    DENY_CONFIG_TAMPER, DENY_MUTATING, DENY_OABE_BINARY, DENY_AMBIGUOUS).
+    Without this tool, such an attempt would leave no record anywhere: the
+    connector's own deny response only ever reaches the calling agent
+    locally on every one of those paths.
+
+    Deliberately more lenient than whoami/read_document about the human
+    principal: several of the decisions worth reporting here (e.g. an
+    attempt to read the credential store, or to tamper with this
+    installation's own hook config) can happen before any human has ever
+    logged in. A missing/invalid human session is recorded as
+    username=None rather than rejecting the call outright - the one thing
+    this tool must never do is fail to log an attempt just because
+    identity resolution failed. `agent_token` (this installation's own
+    Keycloak client_credentials token) is still required and still
+    verified exactly like every other tool here: an attempt to report a
+    denial as an installation that doesn't check out is itself worth an
+    audit "denied" entry, not a silent no-op."""
+    with core.audit_op("mcp", f"local_deny:{decision_kind}", path=tool_name or None) as ctx:
+        try:
+            username, _, user_roles = core.current_identity()
+            ctx["username"] = username
+            ctx["auth_source"] = core.session.source()
+        except AuthError:
+            user_roles = []
+        agent_id, _ = core.resolve_agent(agent_token, user_roles)
+        ctx["agent_id"] = agent_id
+        ctx["detail"] = reason
+        return {"recorded": True}
 
 
 if __name__ == "__main__":

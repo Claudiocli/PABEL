@@ -76,6 +76,56 @@ def invokes_oabe_binary(tool_input):
     return bool(OABE_BINARY.search(json.dumps(tool_input)))
 
 
+# Every hook-based installer's own hook/MCP registration file (installers/
+# claude_code.py, vscode.py, copilot_cli.py, cursor.py, windsurf.py -
+# CONFIG_RELATIVE_PATH/MCP_CONFIG_RELATIVE_PATH/GLOBAL_CONFIG_RELATIVE_PATH),
+# as project-relative fragments. codex_family.py (Codex CLI/ChatGPT desktop)
+# is deliberately absent - neither has a hook for decide() to protect in the
+# first place, same reason they're absent from installers/registry.py's
+# ADAPTERS. A --global install's path is still caught here without knowing
+# base_dir: e.g. Claude Code's global `~/.claude/settings.json` still
+# contains the substring ".claude/settings.json", so listing the relative
+# fragment once covers both scopes.
+_HOOK_CONFIG_RELATIVE_PATHS = [
+    ".claude/settings.json",
+    ".mcp.json",
+    ".github/hooks/pabel.json",
+    ".vscode/mcp.json",
+    ".github/hooks/pabel-copilot-cli.json",
+    ".copilot/hooks/pabel-copilot-cli.json",
+    ".cursor/hooks.json",
+    ".windsurf/hooks.json",
+    ".codeium/windsurf/hooks.json",
+]
+_HOOK_CONFIG_CANDIDATES = [
+    variant
+    for rel in _HOOK_CONFIG_RELATIVE_PATHS
+    for variant in (rel, rel.replace("/", "\\"))
+]
+
+
+def is_pabel_hook_config_target(path):
+    """True if `path` (a write's actual target - see DENY_MUTATING's
+    write_target-only check in decide.py, same reasoning: a write whose
+    *content* merely discusses one of these files must never be confused
+    with a write *to* one) names one of this package's own hook/MCP
+    registration files.
+
+    Nothing legitimate ever needs to rewrite these except pabel-connector's
+    own install()/uninstall() - which never run as a tool call decide() would
+    see in the first place (they're invoked directly by a human via the
+    `pabel-connector` CLI, outside any agent's hook). A model rewriting one
+    itself is exactly the bypass this exists to catch: the agent_id argument
+    baked into that file at install time is the only thing that ties "this
+    hook fired" to "use this installation's credential" (see decide()'s own
+    docstring) - if a model could edit it freely, it could redirect its own
+    hook to authenticate as any other agent product installed on the same
+    machine, or repoint the deployed server's own URL entirely."""
+    if not path:
+        return False
+    return any(candidate in path for candidate in _HOOK_CONFIG_CANDIDATES)
+
+
 def _is_pabel_connector_source_checkout():
     """True only when the current project IS this connector's own source
     repo (the PABEL monorepo), detected structurally by looking for its
@@ -91,28 +141,58 @@ def _is_pabel_connector_source_checkout():
             / "core" / "decide.py").exists()
 
 
+_PABEL_CONNECTOR_INTERNALS = re.compile(
+    r"(?i)\bpabel_connector\b|\bpabel-connector-hook\b")
+"""Two distinct spellings for the same thing, both denied: the Python
+package name (`pabel_connector`, underscore - `python -m
+pabel_connector.hook <key>`, `from pabel_connector import ...`) and the
+installed console-script name for the hook entry point specifically
+(`pabel-connector-hook`, hyphens - `pyproject.toml`'s `[project.scripts]`).
+A single `\bpabel_connector\b` pattern does NOT catch the second form: a
+hyphen is a non-word character, so "pabel-connector-hook" never contains
+the substring "pabel_connector" at all - confirmed live 2026-08 while
+explaining why hardcoding an adapter's own agent_id is safe once
+DENY_CONFIG_TAMPER exists, which prompted checking whether *this* check
+had the equivalent gap for the other bypass class (running the hook binary
+directly with a hand-picked key/agent_id, rather than rewriting the config
+file that would normally choose it). Deliberately does NOT also match the
+plain `pabel-connector` CLI (install/uninstall/login/doctor) - that command
+needs a real, already-admin-issued client_secret to matter and doesn't let
+a caller pick decide()'s agent_id at call time the way `-hook` does; folding
+it in here would just block routine, legitimate CLI usage a model might
+reasonably run on a human's behalf."""
+
+
 def invokes_pabel_connector_internals(tool_input):
     """True if an execute-type call's command tries to import/invoke this
-    package's own modules directly - never something a model has a
-    legitimate reason to do in a normal project consuming pabel-connector
+    package's own modules, or run its `pabel-connector-hook` entry point
+    directly, with a hand-picked key/agent_id - never something a model has
+    a legitimate reason to do in a normal project consuming pabel-connector
     as a dependency: the hook is the only sanctioned way any of this ever
-    runs, and the hook's own invocation never appears here as a tool_input
-    being evaluated at all (it IS the thing evaluating - see hook.py, and
-    decide.py's own docstring). This is exactly the bypass a live vscode
-    Copilot session was found to use (docs/phase2-engineering-notes.md,
-    the GitHub Copilot.md transcript): with no hook wired yet, it called
+    runs, and the *real* hook's own invocation never appears here as a
+    tool_input being evaluated at all (it IS the thing evaluating - see
+    hook.py, and decide.py's own docstring). Both this and DENY_CONFIG_TAMPER
+    exist to protect the same invariant (which agent_id a given hook
+    invocation uses) from two different angles: DENY_CONFIG_TAMPER stops the
+    config file from being rewritten to name a different agent_id; this
+    stops the hook binary from being invoked directly with one instead, bypassing
+    the config file - and by extension the real per-agent hook - entirely.
+
+    The `pabel_connector` (module) form is exactly the bypass a live vscode
+    Copilot session was found to use (docs/phase2-engineering-notes.md, the
+    GitHub Copilot.md transcript): with no hook wired yet, it called
     `relay.read_document(..., 'claude-code')` directly from a Bash
     one-liner, borrowing a different installation's credential entirely
     outside anything this file could see.
 
     Skipped entirely inside this package's own source checkout
     (`_is_pabel_connector_source_checkout()`), where invoking these
-    modules directly - tests, agents_admin.py, doctor, manual live
+    modules/binaries directly - tests, agents_admin.py, doctor, manual live
     verification - is routine, legitimate development work, not a bypass."""
     if _is_pabel_connector_source_checkout():
         return False
     text = json.dumps(tool_input)
-    return bool(re.search(r"\bpabel_connector\b", text))
+    return bool(_PABEL_CONNECTOR_INTERNALS.search(text))
 
 
 def find_relayable_file(tool_input):

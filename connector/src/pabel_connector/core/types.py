@@ -34,6 +34,7 @@ class DecisionKind(Enum):
     DENY_RELAY_ERROR = auto()
     DENY_CREDENTIAL_ACCESS = auto()
     DENY_HOOK_BYPASS = auto()
+    DENY_CONFIG_TAMPER = auto()
 
 
 @dataclass(frozen=True)

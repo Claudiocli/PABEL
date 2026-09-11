@@ -22,7 +22,7 @@ from pathlib import Path
 from .. import managed_settings
 from ..installers import base
 from ..installers.registry import INSTALLERS
-from ..pabel_client import agent_session, session
+from ..pabel_client import agent_session, audit_log, session
 from ..pabel_client.keycloak_client import AuthError
 
 STATUS_LABELS = {
@@ -114,6 +114,19 @@ def cmd_install(args) -> int:
     agent_session.store_credentials(args.agent, client_id, client_secret)
     print(f"\nInstallation credentials for {args.agent!r} saved to "
           f"{agent_session.CREDENTIALS_FILE}.")
+
+    # Opt-in, company-wide (not per-agent, not per-machine): a copy of this
+    # only enables the *local*, confidentiality-only audit log
+    # (pabel_client/audit_log.py) - it never affects whether install()
+    # itself succeeds, and its absence is silent, not an error, since most
+    # installations won't set this at all.
+    if args.audit_public_key:
+        path = audit_log.install_public_key(args.audit_public_key)
+        print(f"Audit-log public key installed to {path} - PABEL-relevant "
+              f"decisions will now also be recorded, encrypted, in "
+              f"{audit_log.LOG_FILE} (see docs/known-gaps.md's "
+              f"\"Client-side audit log\" section for what this does and "
+              f"does not guarantee).")
     return 0
 
 
@@ -309,6 +322,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_install.add_argument("--client-secret", default=None,
                            help="this installation's Keycloak client_secret (from your admin) - "
                                 "prompted with hidden input if omitted")
+    p_install.add_argument("--audit-public-key", default=None,
+                           help="optional: path to the company-wide audit-log public key "
+                                "(from your admin's `agents_admin.py generate-audit-keypair`) - "
+                                "turns on a local, confidentiality-only encrypted log of "
+                                "PABEL-relevant decisions (see docs/known-gaps.md). Omit to "
+                                "leave this feature off, the default.")
     p_install.set_defaults(func=cmd_install)
 
     p_uninstall = sub.add_parser("uninstall", help="remove the PABEL relay hook from an agent")

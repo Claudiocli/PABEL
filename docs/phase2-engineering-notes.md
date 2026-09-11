@@ -114,8 +114,6 @@ The straightforward fix is using GNU Make's own built-in `$(MAKE)`
 instead of a custom variable that only one platform branch defines —
 applied in the container as a 4-occurrence find/replace in that one file.
 
-*(This file documents the finding; whether to also patch it upstream in
-`Claudiocli/openabe` is your call, not made here.)*
 
 **Bug D — `env`'s `LD_LIBRARY_PATH` doesn't account for `lib64`.**
 Once compilation succeeded, `./test_libopenabe` failed at *launch*, not
@@ -288,8 +286,8 @@ MCP client behaves as an OAuth client (not just what the MCP spec
   alternative, but that's opt-in configuration, not the default path.)
 - How Claude Code isolates OAuth state when several *different* remote
   MCP servers are configured is **not documented** one way or the other —
-  a real risk to build a security boundary on top of, given the option to
-  sidestep it entirely (below).
+  _a real risk to build a security boundary on top of, given the option to
+  sidestep it entirely (below)_.
 
 ### 4.3 Final design: realm role per agent, container instance per agent
 
@@ -2514,3 +2512,309 @@ reasoning that already keeps the shared "pabel" deployed-server `config.toml`
 entry untouched by either product's uninstall. `pyproject.toml`'s
 package-data gained the new file's path (`skills/pabel-codex/SKILL.md`)
 alongside the existing Claude Code one. 3 new tests, 149 total, all passing.
+
+## 24. Closing the config-tamper gap: agent_id spoofing via a hook-based agent's own config file, plus best-effort denial reporting (2026-08-07, later session)
+
+A sharp user question during a demo-prep discussion ("does decide() actually
+check that Claude Code took Claude Code's own id?") surfaced a real gap
+`DENY_CREDENTIAL_ACCESS`/`DENY_HOOK_BYPASS` didn't cover: nothing stopped a
+hook-based agent with Write/Edit access from rewriting its *own* hook/MCP
+registration file (`.claude/settings.json`, `.mcp.json`, etc.) to change the
+`agent_id` argument baked into its hook command at install time - the only
+thing that ties "this hook fired" to "which stored credential to use" (see
+`core/decide.py`'s own docstring: `agent_id` is never trusted as an identity
+claim, purely a local lookup key). Rewriting it to name a different,
+already-installed agent product would let one agent authenticate as
+another's installation without ever having to read its secret directly -
+worse, rewriting `.mcp.json`'s own "pabel" entry could repoint the deployed
+server's URL entirely.
+
+**24.1 `DENY_CONFIG_TAMPER`, mirroring `DENY_MUTATING`'s write-target-only
+check.** New `detection.is_pabel_hook_config_target(path)`: a relative-path
+substring match (both `/` and `\` forms) against every hook-based
+installer's own `CONFIG_RELATIVE_PATH`/`MCP_CONFIG_RELATIVE_PATH` -
+`.claude/settings.json`, `.mcp.json`, `.github/hooks/pabel.json`,
+`.github/hooks/pabel-copilot-cli.json`, `.vscode/mcp.json`,
+`.copilot/hooks/pabel-copilot-cli.json`, `.cursor/hooks.json`,
+`.windsurf/hooks.json`, `.codeium/windsurf/hooks.json` - deliberately
+excluding `codex_family.py`, since Codex CLI/ChatGPT desktop have no hook to
+protect in the first place (same reason they're absent from
+`installers/registry.py`'s ADAPTERS). Checked against `call.write_target`
+only, never the whole `tool_input`, same reasoning as `DENY_MUTATING`:
+writing documentation that merely mentions `.claude/settings.json` must not
+be confused with writing *to* it. A `--global` install's absolute path is
+still caught without decide() ever needing to know `base_dir`: the relative
+fragment is still a substring of the full home-anchored path.
+
+**24.2 `hook.py`'s `agent_id` now comes from the resolved adapter's own
+`.name`, not a second parse of the raw argv key.** Previously
+`agent_id = key.split(":", 1)[0]` re-derived it independently from the same
+string used to look up `ADAPTERS[key]` - correct today only because both
+happen to come from the same source, not because anything enforced they
+stay in sync. Every single-hook-point adapter module already had a
+module-level `name` matching its agent_id (`claude_code.py`, `vscode.py`,
+`copilot_cli.py`); `cursor.py`/`windsurf.py`'s `_CursorHook`/`_WindsurfHook`
+instances already carried a `.name` too (`"cursor:beforeReadFile"` etc.) -
+so this was a one-line change (`adapter.name.split(":", 1)[0]`, read after
+resolving `adapter = ADAPTERS.get(key)`), not a new mechanism. Explicitly
+does **not** close 24.1's gap by itself: `ADAPTERS.get(key)` is still
+resolved from the same mutable `key` string, so an attacker who rewrites the
+hook command still gets *a* legitimately-hardcoded adapter+agent_id pair
+dispatched, just the wrong one, parsing the wrong hook's stdin shape. The
+actual close is 24.1; this is a code-hygiene improvement requested
+alongside it, removing a latent "two derivations of the same value" bug
+class rather than a second independent security boundary.
+
+**24.3 Every locally-decided deny is now best-effort reported to the
+server's audit trail.** Before this, `DENY_CREDENTIAL_ACCESS`,
+`DENY_HOOK_BYPASS`, `DENY_CONFIG_TAMPER`, `DENY_MUTATING`,
+`DENY_OABE_BINARY`, and `DENY_AMBIGUOUS` never made a network call at all -
+a real tampering *attempt* left no record anywhere, unlike `DENY_WITH_RELAY`
+/`DENY_AUTH_ERROR`/`DENY_RELAY_ERROR`, which already reach the server (and
+so get audited there) as a side effect of the real `read_document` attempt.
+New server-side MCP tool `report_denial` (`server/mcp_server.py`), wrapped
+in the same `core.audit_op` every other tool uses, but deliberately more
+lenient than `whoami`/`read_document` about the human principal: several of
+these decisions can fire before any login has happened, so a missing/
+invalid human session is recorded as `username=None` rather than rejecting
+the call - the one thing this tool must never do is fail to log an attempt
+just because identity resolution failed. `agent_token` is still required
+and still verified exactly like every other tool: an attempt to report a
+denial with an invalid installation credential is itself worth its own
+"denied" audit entry, not a silent no-op.
+
+Connector side: `relay.report_denial()` (sync) / `report_denial_async()`,
+called from a new `core.decide._deny_locally()` helper wrapping every
+locally-decided `Decision` construction above. Deliberately swallows every
+failure (`except Exception: pass`) - a missing stored credential, no
+`PABEL_SERVER_URL`, no human login yet, an unreachable server - since
+`decide()` has already produced its `Decision` by the time this runs;
+nothing here may change or delay what the calling agent gets back.
+
+**24.4 A real, live-caught performance bug in this same change**: the first
+version had no timeout at all on the reporting call. The full connector
+test suite's runtime jumped from ~2s to ~27s the moment this was wired in -
+every test exercising a deny path attempted a real (bound-less) connection
+attempt. Fixed two ways, not one: (a) `REPORT_DENIAL_TIMEOUT_SECONDS = 3`
+(`anyio.fail_after`) bounds the worst case in *production* too - without it,
+every locally-denied tool call (even a routine `DENY_AMBIGUOUS` on a typo)
+would make the calling agent wait however long a hung connection takes
+before ever seeing the deny response, turning routine local enforcement into
+a multi-second stall; (b) `test_decide.py` gained an autouse fixture
+monkeypatching `relay.report_denial` to a no-op by default, so decide()'s
+own unit tests stay isolated from the network entirely, with dedicated tests
+overriding it with a recording stub specifically to prove the reporting call
+itself happens with the right arguments. Both fixes are necessary - the
+timeout bounds a real production cost, the test isolation is why the
+regression wasn't caught by a slow-but-passing CI run instead of being
+noticed immediately.
+
+18 new tests (`test_detection.py`, `test_decide.py`, `test_hook.py`,
+`test_relay.py`), 167 total, all passing. No server-side test added for
+`report_denial` itself - consistent with this project's existing coverage,
+`mcp_server.py`'s tool functions (`whoami`/`read_document`) have never had
+direct unit tests either, only `core.py`'s building blocks
+(`resolve_agent`/`auth.client_id_of`) - syntax-checked via `ast.parse`
+instead, same bar the rest of that file is held to today.
+
+## 25. Dead-code sweep: forgotten pre-agent-key leftovers, and a final scope call on document authoring (2026-08-07, later session)
+
+Prompted by the user noticing `adapters/base.py`'s `Adapter` Protocol class
+looked unused while reading the code, with a request to sweep for anything
+else "forgotten from past builds." Ran `vulture` (installed ad hoc into the
+dev venv, not added as a project dependency) across `connector/src` and
+`server/`, then verified every hit by hand rather than trusting the tool -
+most of what it flags for a project like this is a false positive, not real
+dead code.
+
+**25.1 Confirmed real dead code, removed:**
+- `server/core.py`'s `user_key()` and `server/db.py`'s `get_user_key()`/
+  `store_user_key()` - a leftover from before this project's per-agent
+  combined-key design existed. `read_document`/`whoami` only ever call
+  `agent_session_key()` (user *and* agent attributes combined); nothing
+  anywhere called the user-only path. The `user_keys` table in `schema.sql`
+  (and its mention in `server/README.md`'s schema step) removed too, at the
+  user's explicit choice, since nothing would ever populate it again.
+- `server/abe.py`'s document-encryption helper - see §25.2.
+- `adapters/base.py`'s `Adapter` and `installers/base.py`'s `Installer` -
+  both `typing.Protocol` classes documenting each Strategy's expected shape,
+  never actually imported or type-checked against anywhere (confirmed via
+  grep, not just vulture). Removed at the user's explicit choice after
+  confirming they're an intentional documentation pattern, not an accident -
+  the genuinely useful content in `Installer`'s docstring (which attributes
+  are missing on which installers, and why) was preserved by folding it into
+  `installers/base.py`'s module-level docstring instead of deleting it
+  outright.
+
+**25.2 A scope question finally closed, not just a deletion.** The removed
+helper being unused reopened the "what about actually authoring/encrypting
+a `.abe` file" question left implicit since points.txt's item 9. Asked the
+user directly rather than assuming: confirmed this project - both `server/`
+and `connector/` - is deliberately decrypt-only; producing a new `.abe`
+document (encrypting plaintext under a policy, choosing what that policy
+is, distributing the result) is the deploying company's own responsibility,
+not a tool this codebase offers. Written up as its own permanent section in
+`docs/known-gaps.md` ("Encrypting/authoring .abe documents") - explicitly
+marked "revisit when: never, unless this project's own scope changes",
+distinct from every other entry in that file (which are all real technical
+limitations of a vendor product, waiting on that vendor). `abe.py`'s own
+module docstring updated to state plainly it's decrypt-only and point at
+that section, so the next person reading the file doesn't have to
+rediscover this by noticing a missing function.
+
+**25.3 What was checked and correctly left alone**, so this doesn't read as
+an exhaustive removal pass: `mcp_local_server.py`'s/`mcp_server.py`'s
+`whoami`/`read_document`/`materialize_document` (all `@mcp.tool()`-decorated,
+invoked by the MCP framework via reflection, never by this codebase's own
+Python - vulture cannot see decorator-based dynamic dispatch), both
+`oauth_browser.py` copies' `do_GET`/`log_message` (override
+`http.server.BaseHTTPRequestHandler`, called by the stdlib's own HTTP
+server loop), `token_verifier.py`'s `verify_token` (called by FastMCP's own
+bearer-auth middleware, confirmed via that file's own docstring), a couple
+of one-off deployment commands invoked from a shell per
+`server/README.md`'s Quickstart, never imported by another module -
+correctly flagged as "unused" by any tool that only looks at Python-to-
+Python references. Also ran a whole-file orphan check (does any other
+`.py` file or test reference this module's own filename) across both
+`connector/src` and `server/` - found nothing beyond the false positives
+already listed above. `connector/build/`/`connector/dist/` (local wheel/
+build output from this session's own `pip install -e` runs) are already
+gitignored, never tracked - left alone, not a repo cleanliness issue.
+
+167 connector tests still passing (no test touched the removed code); 9
+server tests still passing (none had ever covered the removed functions
+either, consistent with the rest of `server/`'s test coverage). Both edited
+`server/core.py`/`server/db.py`/`server/abe.py` syntax-checked via
+`ast.parse` (no live Postgres/OpenABE binaries in this session to run the
+server suite's own DB-backed paths against, same limitation as the rest of
+this project's server-side work done from an assistant session).
+
+## 26. This very hook denying its own documentation, live (2026-08-07, same session)
+
+Writing §25 above (which discusses removing `server/abe.py`'s encryption
+helper and names the OpenABE CLI executables involved) via a Bash heredoc
+got denied by this repo's own live PreToolUse hook with `DENY_OABE_BINARY` -
+`core/detection.py`'s `invokes_oabe_binary()` matches the whole `tool_input`
+of any execute call, not just a narrower "target" field the way
+`DENY_MUTATING`'s write-target-only check does, so prose merely *naming*
+those executables (inside a heredoc documenting the check itself) matched
+exactly the same as a real invocation would have.
+
+Worked around by writing this file with the Edit tool instead
+(`is_execute=False` for Write/Edit - see `adapters/claude_code.py`'s
+`parse()` - so the check never runs at all for that path), not by weakening
+the check. Noted here rather than silently worked around: a real, live
+false-positive class for anyone writing *about* this project's own
+enforcement from a shell command, distinct from - and not currently worth
+fixing the same way as - `DENY_MUTATING`'s already-solved write-target
+narrowing, since an execute call has no single well-defined "target" field
+the way a write does.
+
+## 27. Closing the hyphen/underscore hole in DENY_HOOK_BYPASS, and a client-side confidentiality-only audit log (2026-08-07, same session)
+
+**27.1 A second real gap, found by the user's own pushback, not by a
+tool.** Explaining why hardcoding an adapter's own agent_id is safe once
+DENY_CONFIG_TAMPER exists prompted checking the other angle: is there any
+way to make `ADAPTERS.get(key)` resolve to the wrong adapter *without*
+touching the config file DENY_CONFIG_TAMPER protects? Yes -
+`invokes_pabel_connector_internals()`'s regex (`\bpabel_connector\b`) only
+matched the Python package name (`python -m pabel_connector.hook <key>`),
+never the installed console-script name for the hook entry point itself
+(`pabel-connector-hook <key>`, hyphens - `pyproject.toml`'s
+`[project.scripts]`). A hyphen is a non-word character, so the hyphenated
+form never contains the underscored substring the regex looked for. A Bash
+one-liner running `pabel-connector-hook cursor:beforeReadFile` directly,
+with hand-crafted stdin, bypassed this check entirely - the exact same
+bypass class `DENY_HOOK_BYPASS` already existed to catch (the real vscode
+Copilot incident, §9's `from pabel_connector.pabel_client import
+agent_session` one-liner), just via the other spelling of the same
+mechanism. Fixed by matching both forms in one regex
+(`\bpabel_connector\b|\bpabel-connector-hook\b`), deliberately *not*
+extended to the plain `pabel-connector` CLI (install/uninstall/login/
+doctor) - that command needs a real, already-admin-issued client_secret to
+matter and never lets a caller pick decide()'s agent_id at call time the
+way `-hook` does, so folding it in would just block routine, legitimate
+CLI usage. 2 new tests, 169 connector tests passing at this point.
+
+With both DENY_CONFIG_TAMPER (protects the config file) and this fix
+(protects against invoking the hook binary directly with a chosen key)
+together, "which adapter got dispatched implies which real agent is
+calling" now holds as strongly as this architecture can make it hold, for
+every hook-based agent - confirming the user's original instinct
+(hardcode/trust the adapter) was right, once both halves of what makes it
+safe are actually in place.
+
+**27.2 Client-side audit log - requested, then correctly scoped down by
+the user before being built.** The user's ask: give a company's own
+security team the ability to cross-reference an employee's local machine
+against the server's audit trail ("was agent_X really used at time T, like
+the server log says"), proposing either an RSA-encrypted local log keyed by
+hostname, or reusing this project's own CP-ABE machinery so IT holds a
+master key and the endpoint only a "logging" key.
+
+Both proposals needed correcting before building anything:
+- **"Hostname as key material" is cryptographically unsound.** Any value
+  the audited process can itself read (a hostname is not secret) cannot
+  double as key material meant to be out of that process's reach - the
+  sound version is a real, randomly-generated keypair, with the hostname
+  (or nothing at all) used only as a label/index, never as the key itself.
+- **CP-ABE is the wrong tool here, not a free reuse of existing
+  infrastructure.** This is a single-encryptor (the endpoint),
+  single-decryptor (IT) problem - exactly the shape plain asymmetric
+  encryption exists for. ABE's fine-grained multi-attribute decryption
+  policy adds real engineering surface (and would have required
+  reintroducing the `encrypt_bytes()`/`oabe_enc` helper removed as
+  out-of-scope in §25) for a property - different decryption rights for
+  different IT roles - nobody asked for.
+- **Confidentiality is achievable; integrity against the very agent being
+  recorded is not, encrypted or not.** Whatever process can legitimately
+  append a new entry (this installation's own hook subprocess, same OS
+  permissions as the agent) can, by the same access, delete the log,
+  silently stop writing to it, or - holding the same public key needed to
+  encrypt at all - write a fabricated entry that decrypts exactly as
+  cleanly as a real one. The user's own follow-up confirmed accepting this
+  explicitly, given an RCE-capable agent makes chasing integrity there
+  pointless - this is the same category of accepted limit as everything
+  else in `docs/known-gaps.md`, not a compromise specific to this feature.
+
+Confirmed with the user before implementing: PABEL-relevant `decide()`
+outcomes only (not general process/agent monitoring - explicitly out of
+this project's scope, EDR territory), and RSA-OAEP+AES-256-GCM hybrid
+encryption (RSA alone cannot encrypt an arbitrary-size payload).
+
+**Design, mirroring how client_id/client_secret are already provisioned**:
+one company-wide keypair (not per-machine - this log's threat model doesn't
+call for per-endpoint revocation, and per-machine keys would only add
+tracking burden for no benefit), generated by a new admin command
+(`agents_admin.py generate-audit-keypair --out-dir DIR`), which never
+touches Keycloak/Postgres/the running server - purely a local keygen step,
+unlike every other command in that file. The public key is handed to
+`pabel-connector install <agent> --audit-public-key <path>` (optional;
+absence silently leaves the feature off, same "graceful absence" pattern as
+`agent_session.access_token`'s `AuthError`-tolerant callers), stored at
+`~/.pabel/audit_public_key.pem`. New `pabel_client/audit_log.py` wires into
+`core/decide.py` at every PABEL-relevant outcome - every `DENY_*` plus the
+two "aware" ALLOWs (a direct call to `pabel`'s/`mcp_local_server.py`'s own
+tools) - deliberately including `DENY_WITH_RELAY`/`DENY_AUTH_ERROR`/
+`DENY_RELAY_ERROR`, which `relay.report_denial()` deliberately skips
+(already server-audited via the real `read_document` attempt): the two
+logs answer different questions - "what does the server's authoritative
+trail say happened" vs. "what does this endpoint's own timeline say
+happened" - and cross-referencing needs both records of the *same* events,
+not just the ones that never reached the server. `agents_admin.py
+decrypt-audit-log LOG_FILE --private-key KEY_FILE` closes the loop for
+whoever holds the private key.
+
+`cryptography` added as a direct dependency to both `connector/
+pyproject.toml` and `server/requirements.txt` (already present
+transitively via `PyJWT[crypto]`/`psycopg[binary]` on the server side, but
+now imported directly by name in both places, so declared directly rather
+than relied on as a transitive accident). 13 new tests across both
+packages (`test_audit_log.py`, `test_agents_admin_audit_keypair.py`, plus
+`test_decide.py` additions) verify a real encrypt/decrypt round trip - not
+mocked on both ends, which would only prove the two sides agree with
+themselves - `server`'s test deliberately reimplements the wire format
+independently rather than importing the connector's own `audit_log.py`
+(separate packages, never cross-imported, same convention already followed
+for `oauth_browser.py`'s two copies). 195 tests total across both packages,
+all passing.

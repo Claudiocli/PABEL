@@ -63,3 +63,41 @@ def test_main_still_routes_ordinary_keys_through_decide(monkeypatch):
     hook.main(argv=["claude-code"])
     assert len(calls) == 1
     assert calls[0][1] == "claude-code"
+
+
+def test_agent_id_comes_from_the_resolved_adapters_own_name_not_the_raw_key(monkeypatch):
+    """Regression test for the fix closing DENY_CONFIG_TAMPER's other half:
+    agent_id must be read back off ADAPTERS[key]'s own `.name`, never a
+    second, independent split() of the raw `key` argv string - otherwise the
+    two could silently drift apart if this dispatch logic ever changes.
+    Proven here by monkeypatching a real registered adapter's `.name` to a
+    different value and confirming decide() receives *that* value, not
+    whatever `key` itself said."""
+    from pabel_connector.core.types import Decision, DecisionKind
+
+    _set_stdin(monkeypatch, json.dumps({"tool_name": "Read", "tool_input": {}}).encode())
+    monkeypatch.setattr(hook.ADAPTERS["claude-code"], "name", "not-claude-code")
+    calls = []
+
+    def fake_decide(call, agent_id):
+        calls.append(agent_id)
+        return Decision(DecisionKind.ALLOW)
+
+    monkeypatch.setattr(hook, "decide", fake_decide)
+    hook.main(argv=["claude-code"])
+    assert calls == ["not-claude-code"]
+
+
+def test_agent_id_for_multi_hook_point_agent_is_the_part_before_the_colon(monkeypatch):
+    from pabel_connector.core.types import Decision, DecisionKind
+
+    _set_stdin(monkeypatch, json.dumps({"file_path": "/x"}).encode())
+    calls = []
+
+    def fake_decide(call, agent_id):
+        calls.append(agent_id)
+        return Decision(DecisionKind.ALLOW)
+
+    monkeypatch.setattr(hook, "decide", fake_decide)
+    hook.main(argv=["windsurf:pre_read_code"])
+    assert calls == ["windsurf"]
