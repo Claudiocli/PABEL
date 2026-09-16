@@ -1,37 +1,26 @@
-"""A local, stdio MCP server bundled with pabel_connector itself, so any
-agent supporting local MCP registration gets whoami/read_document/login as
-directly callable tools the moment `pabel-connector install <agent>` runs
-- no PABEL server repo checkout needed, only this already-installed
-package. It forwards to the already-deployed shared server over the
-network via pabel_client/relay.py - the exact same relay code core/
-decide.py's hook path uses, so a model calling read_document directly here
-behaves identically to a blocked file read getting relayed automatically.
+"""A local stdio MCP server bundled with pabel_connector, so any agent
+supporting MCP registration gets whoami/read_document/login as directly
+callable tools as soon as `pabel-connector install` runs - no server repo
+checkout needed. It forwards to the deployed server through the same
+relay.py the hook path uses, so calling read_document here behaves
+identically to a blocked file read being relayed automatically.
 
-Registered under the server name "pabel-connector" (see
-core/detection.py's PABEL_CONNECTOR_MCP_SERVER_NAME) - distinct from the
-deployed server's own "pabel" name - so decide() can always allow calls to
-it unconditionally, with no agent_token to inject: this process already
-knows its own agent_id, baked in at registration time (see
-installers/base.py's mcp_server_command()), never a value the model
-supplies or sees.
+Registered as "pabel-connector", distinct from the deployed server's
+"pabel", so decide() can allow calls to it unconditionally with no
+agent_token to inject: this process already knows its own agent_id, baked
+in at registration time, never a value the model supplies or sees.
 
-These tools are a debugging/explicit-recovery aid, not the primary path:
-the golden path is still "just try to read the file" and let the hook
-relay it automatically. Their docstrings say so explicitly, since an MCP
-tool's docstring is the only "instructions" a model actually reads before
-deciding whether and how to call it - the model should never have to guess
-the intended file -> login-if-needed -> MCP-decrypts order.
+These tools are a debugging/recovery aid, not the primary path - the golden
+path is still "just try to read the file". Their docstrings say so
+explicitly, since a tool's docstring is the only instruction a model reads
+before deciding how to call it.
 
 Usage: python -m pabel_connector.mcp_local_server <agent_id>
 
-Every tool here is `async def`, calling relay.py's `_async` functions
-directly via `await` - never the plain `read_document()`/`whoami()`/
-`read_document_with_login()` sync wrappers, which call `anyio.run()`
-internally. This server already runs inside its own event loop (FastMCP);
-a live 2026-08 test crashed with "Already running asyncio in this thread"
-the one time a tool handler here called a sync wrapper instead, which
-tried to start a second, nested event loop. See pabel_client/relay.py's
-docstrings for the full explanation.
+Every tool here is `async def` and awaits relay.py's `_async` functions
+directly, never the sync wrappers, which call `anyio.run()` internally:
+this server already runs inside FastMCP's event loop, and a nested one
+crashes with "Already running asyncio in this thread".
 """
 
 import sys

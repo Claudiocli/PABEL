@@ -8,7 +8,16 @@ docstring and the README's coverage table for verification status.
 
 import json
 
-from pabel_connector.adapters import claude_code, copilot_cli, cursor, vscode, windsurf
+import pytest
+
+from pabel_connector.adapters import (
+    claude_code,
+    copilot_cli,
+    cursor,
+    opencode,
+    vscode,
+    windsurf,
+)
 from pabel_connector.core.types import Decision, DecisionKind
 
 
@@ -70,23 +79,20 @@ def test_claude_code_render_deny_with_relay_includes_additional_context():
     assert json.loads(output["additionalContext"]) == content
 
 
-def test_claude_code_handle_session_end_purges_the_cache_unconditionally(monkeypatch):
-    calls = []
-    monkeypatch.setattr(claude_code.materialize, "purge_all", lambda agent_id: calls.append(agent_id))
-    resp = claude_code.handle_session_end(json.dumps({"reason": "clear"}).encode())
-    assert calls == ["claude-code"]
-    assert resp.stdout == "" and resp.stderr == "" and resp.exit_code == 0
-
-
-def test_claude_code_handle_session_end_purges_regardless_of_reason(monkeypatch):
+@pytest.mark.parametrize("payload", [
+    json.dumps({"reason": "clear"}).encode(),
+    json.dumps({"reason": "logout"}).encode(),
+    b"",  # no payload at all
+])
+def test_claude_code_handle_session_end_purges_unconditionally(monkeypatch, payload):
     # Deliberately doesn't branch on the payload's own "reason" field
     # (clear/resume/logout/...) - over-purging on every reason is safe, not
     # lossy, since nothing here is meant to persist across a session boundary.
     calls = []
     monkeypatch.setattr(claude_code.materialize, "purge_all", lambda agent_id: calls.append(agent_id))
-    claude_code.handle_session_end(json.dumps({"reason": "logout"}).encode())
-    claude_code.handle_session_end(b"")
-    assert calls == ["claude-code", "claude-code"]
+    resp = claude_code.handle_session_end(payload)
+    assert calls == ["claude-code"]
+    assert resp.stdout == "" and resp.stderr == "" and resp.exit_code == 0
 
 
 def test_claude_code_handle_session_end_reports_cleanup_failure_on_stderr(monkeypatch):
@@ -214,6 +220,86 @@ def test_windsurf_render_deny_uses_exit_code_2_and_stderr():
     assert resp.exit_code == 2
     assert "hello" in resp.stderr
     assert resp.stdout == ""
+
+
+# --- opencode -------------------------------------------------------------
+
+def _opencode_payload(tool, args):
+    return json.dumps({"tool": tool, "args": args}).encode()
+
+
+def test_opencode_parse_unrelated_read():
+    call = opencode.parse([], _opencode_payload("read", {"filePath": "/repo/README.md"}))
+    assert call.tool_name == "read"
+    assert not call.is_write and not call.is_execute
+    assert call.mcp_target is None
+
+
+def test_opencode_parse_recognizes_mutating_tools_and_bash():
+    assert opencode.parse([], _opencode_payload("write", {})).is_write
+    assert opencode.parse([], _opencode_payload("edit", {})).is_write
+    assert opencode.parse([], _opencode_payload("patch", {})).is_write
+    assert opencode.parse([], _opencode_payload("bash", {"command": "ls"})).is_execute
+
+
+def test_opencode_parse_extracts_write_target_not_whole_payload():
+    call = opencode.parse([], _opencode_payload(
+        "write", {"filePath": "docs/notes.md", "content": "discusses documents/test.abe"}))
+    assert call.write_target == "docs/notes.md"
+
+
+def test_opencode_parse_recovers_mcp_target_from_a_prefixed_tool_name():
+    # The separator opencode uses to namespace MCP tools isn't confirmed, so
+    # the adapter accepts several - but only when the prefix is one of this
+    # project's OWN server names, never for an arbitrary underscore.
+    assert opencode.parse([], _opencode_payload(
+        "pabel_read_document", {})).mcp_target == ("pabel", "read_document")
+    assert opencode.parse([], _opencode_payload(
+        "pabel-connector_whoami", {})).mcp_target == ("pabel-connector", "whoami")
+
+
+def test_opencode_parse_does_not_split_an_unrelated_underscored_tool_name():
+    """`read_document` must not be mistaken for server "read", tool
+    "document" - the prefix has to be a known PABEL server name first."""
+    call = opencode.parse([], _opencode_payload("some_other_tool", {}))
+    assert call.mcp_target is None
+
+
+def test_opencode_parse_falls_back_to_a_bare_pabel_tool_name():
+    # Documented fragility, same as cursor's: a bare `whoami` from some other
+    # MCP server would also match. See adapters/opencode.py's docstring.
+    assert opencode.parse([], _opencode_payload("whoami", {})).mcp_target == ("pabel", "whoami")
+
+
+def test_opencode_render_allow_is_an_explicit_allow():
+    resp = opencode.render(Decision(DecisionKind.ALLOW))
+    assert json.loads(resp.stdout) == {"permission": "allow"}
+    assert resp.exit_code == 0
+
+
+def test_opencode_render_allow_with_updated_input_injects_agent_token():
+    """opencode is the only adapter besides claude_code able to act on
+    Decision.updated_input - `tool.execute.before` may mutate output.args."""
+    updated = {"name": "x.abe", "agent_token": "secret-token"}
+    resp = opencode.render(Decision(DecisionKind.ALLOW, updated_input=updated))
+    assert json.loads(resp.stdout) == {"permission": "allow", "updated_args": updated}
+
+
+def test_opencode_render_deny_folds_relayed_content_into_the_thrown_message():
+    """opencode has no deny-with-content channel - throwing is the only way
+    to block, so the relayed result has to travel inside that one message."""
+    content = {"sections": ["hello"]}
+    resp = opencode.render(
+        Decision(DecisionKind.DENY_WITH_RELAY, reason="blocked", content=content))
+    payload = json.loads(resp.stdout)
+    assert payload["permission"] == "deny"
+    assert "blocked" in payload["message"]
+    assert "hello" in payload["message"]
+
+
+def test_opencode_render_deny_without_content_still_carries_the_reason():
+    resp = opencode.render(Decision(DecisionKind.DENY_CONFIG_TAMPER, reason="no tampering"))
+    assert json.loads(resp.stdout) == {"permission": "deny", "message": "no tampering"}
 
 
 # Gemini CLI's adapter/installer were removed entirely (deprecated by the

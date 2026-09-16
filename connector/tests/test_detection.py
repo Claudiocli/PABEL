@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+
 from pabel_connector.core.detection import (
     find_relayable_file,
     invokes_oabe_binary,
@@ -77,6 +80,34 @@ def test_touches_pabel_credential_store_ignores_unrelated_input():
     assert not touches_pabel_credential_store({"file_path": "/repo/README.md"})
 
 
+def test_touches_pabel_credential_store_matches_a_forward_slash_windows_spelling(monkeypatch):
+    """Regression: found live 2026-09 while smoke-testing the opencode
+    bridge. `C:/Users/.../.pabel/agent_credentials.json` opens exactly the
+    same file as the backslash form Path produces on Windows, but the old
+    plain substring comparison only ever matched one spelling - so simply
+    asking with forward slashes walked past DENY_CREDENTIAL_ACCESS and handed
+    a live agent secret to the model. Same defect class as the
+    pabel_connector/pabel-connector-hook regex gap."""
+    monkeypatch.setattr(agent_session, "CREDENTIALS_FILE",
+                        r"C:\Users\alice\.pabel\agent_credentials.json")
+    assert touches_pabel_credential_store(
+        {"file_path": r"C:\Users\alice\.pabel\agent_credentials.json"})
+    assert touches_pabel_credential_store(
+        {"file_path": "C:/Users/alice/.pabel/agent_credentials.json"})
+
+
+def test_touches_pabel_credential_store_is_case_insensitive_only_where_the_os_is(monkeypatch):
+    """os.path.normcase folds case on Windows and is a no-op on POSIX, so
+    this check can never start denying two genuinely distinct files on a
+    case-sensitive filesystem just to close the Windows gap above."""
+    monkeypatch.setattr(agent_session, "CREDENTIALS_FILE",
+                        os.path.join("home", "alice", ".pabel", "agent_credentials.json"))
+    shouted = os.path.join("HOME", "ALICE", ".PABEL", "AGENT_CREDENTIALS.JSON")
+    expected = os.path.normcase(shouted) == os.path.normcase(
+        os.path.join("home", "alice", ".pabel", "agent_credentials.json"))
+    assert touches_pabel_credential_store({"file_path": shouted}) is expected
+
+
 def test_invokes_pabel_connector_internals_blocked_outside_source_checkout(
         tmp_path, monkeypatch):
     """The exact bypass found live: a Bash one-liner importing
@@ -88,10 +119,14 @@ def test_invokes_pabel_connector_internals_blocked_outside_source_checkout(
     assert invokes_pabel_connector_internals({"command": command})
 
 
-def test_invokes_pabel_connector_internals_allowed_inside_source_checkout():
-    # Running from this repo's own root (pytest's cwd) - connector/src/
-    # pabel_connector genuinely exists here, so this is legitimate
-    # development work (tests, agents_admin.py, doctor), not a bypass.
+def test_invokes_pabel_connector_internals_allowed_inside_source_checkout(monkeypatch):
+    # connector/src/pabel_connector genuinely exists at this repo's root, so
+    # this is legitimate development work (tests, agents_admin.py, doctor),
+    # not a bypass. chdir explicitly rather than inheriting pytest's cwd:
+    # this passed when run from the repo root and failed when run from
+    # connector/, which made a security-relevant escape hatch look flaky
+    # instead of deterministic.
+    monkeypatch.chdir(Path(__file__).resolve().parents[2])
     command = "python -m pabel_connector.cli.main doctor --dir ."
     assert not invokes_pabel_connector_internals({"command": command})
 
@@ -138,8 +173,26 @@ def test_is_pabel_hook_config_target_matches_every_hook_based_installer():
         ".cursor/hooks.json",
         ".windsurf/hooks.json",
         ".codeium/windsurf/hooks.json",
+        ".opencode/plugins/pabel.js",
+        "opencode.json",
     ]:
         assert is_pabel_hook_config_target(path), path
+
+
+def test_is_pabel_hook_config_target_covers_opencodes_bridge_plugin_in_both_scopes():
+    """opencode's enforcement IS the .js file, so rewriting it replaces the
+    whole enforcement path in place without any credential being read - it
+    has to be denied in project scope, global scope, and the singular
+    `plugin/` spelling opencode still accepts for backwards compatibility."""
+    assert is_pabel_hook_config_target("/repo/.opencode/plugins/pabel.js")
+    assert is_pabel_hook_config_target("/home/alice/.config/opencode/plugins/pabel.js")
+    assert is_pabel_hook_config_target("/repo/.opencode/plugin/pabel.js")
+    assert is_pabel_hook_config_target("C:\\repo\\.opencode\\plugins\\pabel.js")
+
+
+def test_is_pabel_hook_config_target_covers_opencode_config_in_both_scopes():
+    assert is_pabel_hook_config_target("/repo/opencode.json")
+    assert is_pabel_hook_config_target("/home/alice/.config/opencode/opencode.json")
 
 
 def test_is_pabel_hook_config_target_matches_windows_separators():

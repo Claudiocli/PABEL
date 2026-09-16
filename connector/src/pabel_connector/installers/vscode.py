@@ -6,52 +6,28 @@ first-attempt install was found to not fire at all - see
 docs/phase2-engineering-notes.md and connector/docs/coverage-matrix.md);
 still UNVERIFIED end-to-end against a real Copilot session.
 
-The first version of this installer wrote `.vscode/hooks.json` using
-Claude Code's nested `[{"matcher": ..., "hooks": [...]}]` shape - both
-wrong. The confirmed workspace-scope location is `.github/hooks/*.json`,
-and the confirmed `PreToolUse` shape is a FLAT array of hook command
-objects directly (`{"type": "command", "command": ..., "timeout": ...}`) -
-the nested matcher/hooks wrapper is only accepted when VS Code parses an
-actual `.claude/settings.json`-shaped file for cross-tool compatibility,
-not the native format for a file under `.github/hooks/`. VS Code is also
-documented to parse but NOT ENFORCE any `matcher` field at all - every
-hook in the array always runs regardless of tool name - so there was
-never a reason to write one, catch-all is the only mode that exists here.
+Two real bugs shaped this file, both worth not repeating:
 
-This bug meant the hook was never read by VS Code at all, for anyone who
-installed it before this fix - not a schema mismatch VS Code silently
-tolerated, a file it never looked at in the first place.
+1. The first version guessed `.vscode/hooks.json` with Claude Code's nested
+   `[{"matcher": ..., "hooks": [...]}]` shape - both wrong. The confirmed
+   location is `.github/hooks/*.json` and the confirmed `PreToolUse` shape
+   is a FLAT array of command objects. VS Code never read the file at all,
+   for anyone who installed before the fix. It also parses but does not
+   enforce `matcher`, so catch-all is the only mode that exists here.
 
-**Second real bug, found live 2026-08 with the path fix in place**: VS
-Code's `command` field is executed via `powershell -Command` on Windows
-(docs confirm a separate `windows` override field exists precisely because
-`command`'s execution is OS-specific, and community sources confirm
-PowerShell specifically for the Windows case). `base.hook_command()`'s
-plain `"<python.exe>" -m pabel_connector.hook vscode` is invalid PowerShell
-syntax without the call operator (`&`) - PowerShell parses a leading quoted
-string as a standalone expression and rejects anything after it
-(`Unexpected token '-m' in expression or statement.`), confirmed against a
-real failing hook invocation. Fixed by also writing a `windows` field via
-`base.hook_command_windows()`, which prefixes `&`.
+2. VS Code executes `command` through `powershell -Command` on Windows,
+   where `base.hook_command()`'s quoted path plus arguments is a parser
+   error without the call operator. Fixed by also writing a `windows` field
+   via `base.hook_command_windows()`.
 
-Also registers mcp_local_server.py as a direct MCP server in
-`.vscode/mcp.json` (confirmed schema: `{"servers": {"<name>": {"type":
-"stdio", "command", "args"}}}`, code.visualstudio.com/docs/agent-
-customization/mcp-servers) - whoami/read_document/login become directly
-callable tools, not just something the hook relays reactively.
+Also registers mcp_local_server.py in `.vscode/mcp.json`, so the tools are
+directly callable rather than only relayed reactively.
 
-**No `--global` support** (unlike claude-code/cursor/windsurf/
-copilot-cli): a 2026-08 doc search found no confirmed user-profile-level
-file for VS Code's *native agent hooks* specifically - only the
-workspace-scoped `.github/hooks/*.json` above. VS Code's "Agent Plugins"
-feature does support enabling/disabling a plugin globally vs. per-
-workspace, but that's a UI toggle over internal settings storage, not a
-raw JSON file this package could write to the way every other agent's
-global location is a plain file. This installer therefore has no
-GLOBAL_CONFIG_RELATIVE_PATH at all - `cli/main.py` rejects `--global` for
-`vscode` with a clear error rather than silently guessing a path, which is
-exactly the mistake (`.vscode/hooks.json`) this whole module already had
-to recover from once.
+**No `--global` support**: no user-level file exists for VS Code's native
+agent hooks, only the workspace-scoped one. Its "Agent Plugins" toggle is
+UI state over internal storage, not a JSON file this package could write.
+So there is no GLOBAL_CONFIG_RELATIVE_PATH and `--global` is rejected -
+rather than guessing a path, which is the exact mistake above.
 """
 
 from pathlib import Path

@@ -2,35 +2,22 @@
 generic PreToolUse event: `beforeReadFile`, `beforeShellExecution`,
 `beforeMCPExecution`. Each gets its own registry entry
 ("cursor:beforeReadFile" etc.) since their input payloads differ, but they
-share one response shape: `{permission: "allow"|"deny"|"ask",
-agent_message, user_message}` (snake_case - CONFIRMED against
-cursor.com/docs/hooks 2026-08, re-checked after installers/vscode.py's own
-guessed path/schema turned out to be simply wrong, prompting a full
-re-verification of every "built to spec" adapter in this package rather
-than trusting the original research). `agent_message` is the channel that
-reaches the model (the role `additionalContext` plays for Claude
-Code/VS Code). Earlier versions of this file used camelCase
-(`agentMessage`/`userMessage`) - a plausible-looking but wrong guess,
-same class of bug as vscode's path, just never caught because no live
-Cursor install had been tried yet either.
+share one response shape: `{permission, agent_message, user_message}`,
+snake_case. `agent_message` is the channel that reaches the model. An
+earlier version guessed camelCase - plausible, wrong, and never caught
+because no live install had been tried.
 
-STATUS: BUILT-TO-SPEC, UNVERIFIED - still no live Cursor install has been
-exercised end-to-end (see connector/docs/coverage-matrix.md); the
-2026-08 doc re-check above only confirms the schema on paper, not that
-this actually fires as expected in a live session.
+STATUS: BUILT-TO-SPEC, UNVERIFIED. The schema is confirmed on paper only;
+nothing here has fired in a live session.
 
-Known, accepted gap: Cursor has no pre-write-block hook (only the
-post-hoc `afterFileEdit`) - not modeled here, since this project has no
-legitimate `.abe` write path anyway (see core/decide.py's DENY_MUTATING).
+Accepted gap: Cursor has no pre-write-block hook, only the post-hoc
+`afterFileEdit`. Not modelled, since there's no legitimate `.abe` write
+path anyway.
 
-Known limitation: no separate "MCP server name" field was found in
-Cursor's `beforeMCPExecution` payload docs (only `tool_name`, `tool_input`,
-and either `url` or `command` identifying the server's own launch/URL) -
-so `mcp_target` here is inferred heuristically by checking whether
-`tool_name` matches one of this project's own known tool names
-(`whoami`/`read_document`), not from an explicit server identifier. This
-is a real fragility if another MCP server ever exposes a same-named tool;
-tighten this once a real payload can be inspected.
+Known limitation: no MCP server-name field was found in the
+`beforeMCPExecution` payload, so `mcp_target` is inferred from the tool name
+matching a known PABEL tool. A real fragility if another server ever exposes
+a same-named tool; tighten once a real payload can be inspected.
 """
 
 import json

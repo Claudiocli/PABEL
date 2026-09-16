@@ -24,7 +24,7 @@ def isolated_cache_root(tmp_path, monkeypatch):
     monkeypatch.setattr(materialize, "CACHE_ROOT", tmp_path / "materialized")
 
 
-def test_cache_dir_is_scoped_per_agent_product(tmp_path):
+def test_cache_dir_is_scoped_per_agent_product():
     # Never shared across products installed side by side on the same
     # machine - two products' combined ABE keys can legitimately decrypt
     # different sections of the same source document.

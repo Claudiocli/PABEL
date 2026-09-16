@@ -7,6 +7,12 @@ explanation rather than silently no-op-ing or erroring confusingly. Two more
 either, but a real install action exists for MCP tool registration - see
 their own sections below for why that split exists.
 
+One section below (opencode) is deliberately a different kind of entry: it
+documents an agent that *does* enforce, where what's unconfirmed is only
+whether the relayed document text reaches the model - a usability ceiling,
+not a confidentiality one. It lives here rather than in the coverage matrix
+alone because the distinction is easy to overclaim in either direction.
+
 ## Encrypting/authoring .abe documents
 
 Not a gap this codebase intends to close - a deliberate scope decision,
@@ -79,6 +85,70 @@ see above, it's a structural impossibility for a local file, not a gap this
 project failed to close. The confidentiality property could later be
 extended (e.g. per-machine keys, if a real need for per-endpoint revocation
 emerges) without changing the core design.
+
+## opencode - the content channel, not the block
+
+New 2026-09. Unlike every other section in this file, this is **not** an
+agent without enforcement: `pabel-connector install opencode` wires a real
+`tool.execute.before` interception path and a direct `.abe` read is genuinely
+blocked. What's uncertain here is narrower, and worth stating precisely
+because it's easy to overclaim in either direction.
+
+opencode's `tool.execute.before` has no allow/deny field. The only way to
+stop a call is to **throw**, and the only thing that travels with a throw is
+its message - so `adapters/opencode.py` folds the relayed `read_document`
+result into that message, exactly as `cursor`'s `agent_message` and
+`copilot-cli`/`windsurf`'s stderr fallback already do. Whether opencode
+surfaces a thrown message to the *model* (rather than swallowing it or
+showing it only to the human) is an open question upstream -
+github.com/lowcoordination/acropolis_mcp/issues/126 asks exactly this. The
+available evidence leans yes (failed tool calls are reported to route into
+the message stream, where the model reads them); nobody has confirmed it
+live, and this package has not either.
+
+**What holds regardless**: the block. The direct read of the ciphertext does
+not happen, the `oabe_*` binaries are not reachable, `DENY_CREDENTIAL_ACCESS`
+and `DENY_CONFIG_TAMPER` fire normally - all verified end-to-end through the
+real bridge against the real Python hook (see
+`docs/phase2-engineering-notes.md`). **What may degrade**: the relay. If the
+thrown message isn't delivered to the model, block-and-relay becomes a plain,
+unexplained denial and the model never receives the decrypted content. That
+is a usability ceiling, not a confidentiality one - which is the right way
+round for a gap to fail, and the reason this ships as `UNVERIFIED` rather
+than being held back.
+
+**The other thing that's genuinely different here.** opencode loads plugins
+as JS/TS modules into its own runtime; it does not invoke an external command
+from a JSON config the way every other supported agent does. So this is the
+first and only agent for which this package ships **executable JavaScript**
+(`plugins/opencode/pabel.js`, templated at install time by
+`installers/opencode.py`). That bridge holds no policy of its own - it
+forwards the call to `python -m pabel_connector.hook opencode` and applies
+what `adapters/opencode.py` renders, so `core/decide.py` remains the single
+policy for every agent alike - and it **fails closed**: any error, crash,
+missing interpreter or timeout blocks the call rather than letting it
+through. This is a deliberate reversal of the reasoning that keeps Cline out
+of this package (shipping a JS/TS plugin being "a different engineering
+surface"): the cost is real but bounded at ~110 lines with no build step, no
+dependencies and no npm publication, and unlike Cline's case the feature is
+not Windows-unsupported. It should still be re-weighed if that bridge ever
+starts growing logic of its own - the moment it does, the "one agent-agnostic
+policy" property this package is built on is the thing at risk.
+
+Because that `.js` file *is* the enforcement path for this agent, it is
+protected by `DENY_CONFIG_TAMPER` like every other hook config -
+`core/detection.py` lists both its project and global locations, and
+opencode's backwards-compatible singular `plugin/` spelling too. Rewriting
+that one file would otherwise replace enforcement wholesale without any
+credential ever being read.
+
+**Revisit when**: someone confirms live whether a thrown message from
+`tool.execute.before` reaches the model. If it does, this row becomes an
+ordinary `UNVERIFIED`→`VERIFIED` promotion. If it does not, the honest status
+is DEGRADED (blocking-only, content channel to the human only), the same
+ceiling `windsurf` already documents - and `tool.execute.after`'s
+`output.output` is not an escape hatch, since mutating it is itself subject
+to an open upstream bug (anomalyco/opencode#13574).
 
 ## OpenAI Codex CLI
 

@@ -16,7 +16,7 @@ docs/coverage-matrix.md for the full picture and sources. Only
 other entry is built from vendor documentation only.
 """
 
-from .adapters import claude_code, copilot_cli, cursor, vscode, windsurf
+from .adapters import claude_code, copilot_cli, cursor, opencode, vscode, windsurf
 
 # codex-cli/chatgpt-desktop have no entry here (like cline/continue-dev in
 # installers/registry.py) - neither product has any confirmed hook/tool-
@@ -28,6 +28,7 @@ ADAPTERS = {
     "claude-code": claude_code,                                    # VERIFIED
     "vscode": vscode,                                              # UNVERIFIED
     "copilot-cli": copilot_cli,                                    # UNVERIFIED
+    "opencode": opencode,                                          # UNVERIFIED
     "cursor:beforeReadFile": cursor.before_read_file,               # UNVERIFIED
     "cursor:beforeShellExecution": cursor.before_shell_execution,   # UNVERIFIED
     "cursor:beforeMCPExecution": cursor.before_mcp_execution,       # UNVERIFIED

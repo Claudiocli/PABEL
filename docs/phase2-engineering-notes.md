@@ -2818,3 +2818,210 @@ independently rather than importing the connector's own `audit_log.py`
 (separate packages, never cross-imported, same convention already followed
 for `oauth_browser.py`'s two copies). 195 tests total across both packages,
 all passing.
+
+## 28. opencode: the first JS bridge, and a live-found separator bypass in DENY_CREDENTIAL_ACCESS (2026-09-14, later session)
+
+Asked to add opencode (opencode.ai) support. The first answer given was
+wrong in an instructive way and worth recording, because the correction came
+from actually checking rather than from reasoning further.
+
+**The initial call was "MCP-only, like Codex CLI".** That rested on reading
+`tool.execute.before`'s signature - it can mutate `args` or throw, and
+neither is a content-substitution channel - plus the fact that
+`tool.execute.after`'s `output.output` mutation is broken upstream
+(anomalyco/opencode#13574). The user pushed back with "opencode è un
+handler, attenzione", which prompted re-examining the one thing that had
+been skipped: **how PABEL's own reference adapter actually delivers
+content.** `adapters/claude_code.py` does it through
+`permissionDecisionReason`/`additionalContext` on a *deny*. The deny reason
+IS the channel. So a thrown message is structurally the same shape, and the
+question was never "can opencode substitute output" but "does a thrown
+message reach the model" - a different, and answerable, question. It turns
+out to be unconfirmed upstream (lowcoordination/acropolis_mcp#126), which is
+exactly this package's ordinary `UNVERIFIED` status, not a disqualifier. The
+lesson is the recurring one in this file: check the thing you already built
+before concluding a vendor can't support it.
+
+**Shipped**: `adapters/opencode.py`, `installers/opencode.py`,
+`plugins/opencode/pabel.js`, entries in both registries, a
+`hook_wiring_problem()` extension point in `cli/main.py` (one `hasattr`
+check) so `doctor` can verify an enforcement path that is a `.js` file
+rather than a `command` string - without it, opencode would have been
+silently skipped, which is precisely how vscode's never-installed hook went
+unnoticed in §13. opencode is also only the second adapter after
+`claude_code` able to act on `Decision.updated_input`, since
+`tool.execute.before` may rewrite `output.args`.
+
+Two path details were verified rather than guessed, the §13 lesson applied
+directly: the plugin directory is `plugins/` plural (opencode accepts the
+singular for backwards compatibility, so only the plural is written - but
+*both* are denied by `DENY_CONFIG_TAMPER`, since opencode would load either),
+and the global config is `~/.config/opencode/opencode.json`, not
+`~/.opencode/`. Deliberately no `environment` block is written into
+`opencode.json` despite the schema supporting one, unlike
+`installers/codex_family.py`: opencode is a CLI that inherits the invoking
+shell's environment, and unlike `~/.codex/config.toml` this file is often a
+*project* file that may be committed to the company's own repo.
+
+**The real find, though, was a pre-existing security bug, and it came out of
+smoke-testing rather than reasoning.** Driving the finished JS bridge against
+the real Python hook with five payloads, four behaved correctly and one did
+not: a read of the credential store was ALLOWED. The first two explanations
+were both test artifacts (an unexpanded `~`, then mixed path separators from
+an env var) - but chasing the second one down revealed that
+`touches_pabel_credential_store()` compared **one exact spelling** of the
+resolved path as a plain substring. On Windows,
+`C:/Users/.../.pabel/agent_credentials.json` opens the very same file as the
+backslash form `Path` produces, and the filesystem is case-insensitive
+besides - so simply *asking with forward slashes* walked straight past
+`DENY_CREDENTIAL_ACCESS` and would have handed a live agent client_secret to
+the model. This is the single most security-critical check in
+`detection.py`, and it is the same defect class as §27's
+`pabel_connector`/`pabel-connector-hook` regex gap: a matcher that covers one
+spelling of a thing that has several.
+
+The inconsistency that hid it is worth noting: `is_pabel_hook_config_target()`
+- written *later*, in §24 - already defended against the separator half of
+this by building both `/` and `\` variants explicitly. The older function
+simply never had. Fixed by normalising both sides through
+`os.path.normcase()`, which is the right primitive precisely because it is
+platform-correct for free: on Windows it folds separators **and** case, on
+POSIX it is a no-op, so the fix cannot start wrongly denying two genuinely
+distinct files on a case-sensitive filesystem. Applied to
+`is_pabel_hook_config_target()` too, which had the case half of the same
+weakness. Re-running the same bridge payload afterwards flips it to DENY.
+
+Worth stating plainly: this bug had nothing to do with opencode and would
+have been found by smoke-testing any adapter this way. It had simply never
+been exercised with a hand-written path spelling rather than one produced by
+`Path` itself - unit tests all built their input from
+`str(agent_session.CREDENTIALS_FILE)`, so both sides always agreed by
+construction. That is the failure mode to watch for in the rest of this
+suite.
+
+**A third path bug, found the same way - by being asked where a file was.**
+Answering "dove posso vedere questo json?" meant actually listing
+`~/.config/opencode/` on this machine, which turned out to already contain
+`opencode.jsonc` - not `opencode.json`, which is what the installer wrote.
+opencode reads both and its docs state no precedence when both exist, so a
+`--global` install would have had a real chance of landing the MCP
+registration in a file opencode never reads, silently. Fixed by resolving the
+target against disk (`_resolved_config_path()` prefers an existing
+`.jsonc`/`.json` over the default basename) rather than assuming a name -
+literally the §13 vscode lesson a third time in one feature. A commented
+`.jsonc` is deliberately never rewritten (`json.dumps` cannot round-trip
+comments): install writes the plugin, leaves the config untouched, and prints
+the entry to paste - the same merge-not-clobber discipline that pushed
+`codex_family.py` to tomlkit. Worth recording that all three path bugs in
+this feature were found by *looking*, never by reasoning about the docs.
+
+
+
+10 new tests for the adapter, 13 for the installer, 4 for detection
+(including two regression tests for the bypass above, one of which asserts
+the POSIX no-op property so the fix can't silently over-deny). 205 connector
++ 14 server = 219 tests, all passing. The rendered bridge was additionally
+syntax-checked with `node --check` and driven end-to-end against the real
+hook - `node` being present on this machine, which is not assumed for
+employees (opencode ships its own runtime).
+
+
+## 29. doctor's second blind spot, and a six-week-stale copy of the source tree (2026-09-15)
+
+Rebuilding the local Keycloak (its admin password is only read at first
+boot, so a forgotten one can't be changed after the fact) destroyed every
+`client_credentials` client while their Postgres rows survived. Running
+`doctor` afterwards printed `[ok]` for `codex-cli` and `chatgpt-desktop` -
+two installations whose credentials could no longer authenticate at all.
+
+The cause is the mirror image of §13's vscode bug, on the other axis:
+`doctor` verified env vars, the human login, and hook wiring, but never that
+a *stored credential still works*. A revoked or orphaned credential is
+well-formed on disk, so `installations()` keeps listing it and the hook keeps
+using it, failing only at the moment of a real document read. Closed with
+`_credential_problem()`, which requests a token per installation.
+
+That needed one new distinction: `KeycloakUnreachable(AuthError)`. Without
+it, a stopped container would print an identical "dead credential" line per
+installation and bury the actual problem. It's a subclass, so every existing
+`except AuthError` is unaffected, and `doctor` reports unreachability once
+for the whole run.
+
+Separately, cleaning the working tree turned up `connector/build/lib/
+pabel_connector/` - a complete copy of the source from 2026-08-04, predating
+`DENY_CONFIG_TAMPER`, the hyphen/underscore regex fix and the `normcase`
+credential-store fix - plus `connector/dist/*.whl` built from it. Installing
+that wheel would have handed someone a version with the credential-store
+bypass still open, and the duplicate tree made every repo-wide search return
+two copies of `decide.py`/`detection.py`, which is exactly how an audit
+misses something. Removed along with the pytest/`__pycache__` caches;
+`egg-info` deliberately kept, since removing it risks the editable install
+for no benefit.
+
+
+## 30. opencode read an encrypted document untouched, and the cause was the install scope (2026-09-16)
+
+The first real opencode run was asked to read `Test.abe` on the Desktop. It
+read the raw ciphertext, then ran several shell commands, and no PABEL
+decision fired at any point.
+
+The tempting reading is that the adapter failed. It didn't - it was never
+loaded. `install` had been run without `--global`, so the bridge plugin and
+the MCP registration went into this repo's own root, while opencode runs
+from its own directory. The diagnostic that settles it is that **both**
+artifacts were missing at once: the model reported no `read_document` tool
+either. Had the plugin run and wrongly allowed the read, the MCP tools would
+still have been registered. Two absences, one cause.
+
+Two things were confirmed against opencode itself rather than assumed. Its
+bundle globs `{plugin,plugins}/*.{ts,js}`, so the plural directory this
+installer writes is fine; and its docs give the machine-wide locations as
+`~/.config/opencode/plugins/` and `~/.config/opencode/opencode.json(c)`,
+which is what `GLOBAL_*_RELATIVE_PATH` already pointed at. Config sources
+merge with **project overriding global**, so the project-scoped
+`opencode.json` had to be removed, not merely left alongside the new one.
+
+### The actual defect: the default scope
+
+The credential lives in `~/.pabel/agent_credentials.json` - user-level,
+valid from every directory. Enforcement was per-project. An agent was
+therefore *authorised everywhere and constrained in one folder*, escapable
+with `cd`, and the escape is silent because absent wiring fails open. For a
+tool meant to be provisioned once when a machine is handed to an employee,
+per-project was the wrong default outright.
+
+`install`/`uninstall` now default to machine-wide wherever a confirmed
+user-level location exists (7 of 8 installers; `vscode` has none and says
+so). `--dir` is the opt-in. `doctor` grew a matching check: wired in this
+directory but not machine-wide is now reported, where it previously printed
+`[ok]`. `uninstall`'s default had to move with it, or it would have reported
+success while leaving the real wiring in place.
+
+Fixing opencode's `uninstall` exposed two more defects: it removed only the
+`pabel-connector` MCP entry and orphaned the deployed `pabel` one in a file
+it had just called clean, and its new empty-directory tidying raised
+`PermissionError` under OneDrive - aborting the config cleanup that actually
+mattered. Cosmetic work can no longer fail the functional work.
+
+### A test wrote to the real credential store
+
+Two installer tests passed `--client-id x --client-secret y` and relied on
+the CLI *rejecting* the call before it reached `store_credentials`. When
+`install` stopped rejecting it, they silently overwrote two live
+installations' client_ids with `x` in this machine's real
+`~/.pabel/agent_credentials.json`. The client_ids were recoverable from an
+earlier `doctor` run; the secrets were not, though both credentials had
+already been revoked, so nothing of value was lost.
+
+The lesson is not "stub harder" - it is that a *behaviour change elsewhere*
+reached real files through tests that never intended to write one.
+`tests/conftest.py` now redirects both state modules' `DATA_DIR` and file
+constants for every test, from `tmp_path_factory` rather than `tmp_path` so
+the existing "wrote nothing into tmp_path" assertions keep working. One
+parametrized case had to become lazy: it built a path from
+`CREDENTIALS_FILE` at collection time, before any redirection exists.
+
+A `detection` test was also found to pass from the repo root and fail from
+`connector/`, since it inherited pytest's cwd to exercise the source-checkout
+escape hatch. It now chdirs explicitly - a security-relevant exemption should
+be deterministic in tests, not ambient.

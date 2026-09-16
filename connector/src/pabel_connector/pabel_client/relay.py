@@ -48,19 +48,14 @@ async def _call_tool(server_url, token, tool_name, arguments):
 
 
 async def _relay_call_async(tool_name, arguments):
-    """Shared plumbing behind read_document/whoami below: attach the
-    logged-in human's bearer token at the connection level (unchanged
-    across every tool) and call `tool_name` on the deployed PABEL server.
-    Raises RelayError/AuthError - callers turn that into a denial message.
+    """Attach the human's bearer token at the connection level and call
+    `tool_name` on the deployed server. Raises RelayError/AuthError, which
+    callers turn into a denial message.
 
-    An async coroutine, not a plain function that internally does
-    anyio.run() - that would start a *second*, nested event loop whenever
-    the caller is already inside one, which is exactly what
-    mcp_local_server.py's tool handlers are (FastMCP's own event loop) -
-    confirmed live via a real "Already running asyncio in this thread"
-    crash. core/decide.py's hook path (a fresh, plain subprocess with no
-    event loop of its own) uses read_document_with_login()'s sync wrapper
-    instead, the only place anyio.run() is still called."""
+    A coroutine rather than a function that calls anyio.run() internally:
+    that would start a nested event loop whenever the caller already has one,
+    which is exactly mcp_local_server.py's situation under FastMCP. The hook
+    path, a plain subprocess with no loop, uses the sync wrapper instead."""
     server_url = os.environ.get("PABEL_SERVER_URL")
     if not server_url:
         raise RelayError("PABEL_SERVER_URL is not set - see the connector's README.md")
@@ -74,13 +69,9 @@ async def _relay_call_async(tool_name, arguments):
 
 
 async def read_document_async(path, name, agent_id):
-    """Read `path` off disk, base64-encode it, and relay it to the
-    deployed PABEL server's read_document tool, authenticated as both the
-    logged-in human and this installation of `agent_id`. No sync wrapper -
-    every current caller (read_document_with_login_async below,
-    mcp_local_server.py's tools) is already async; add one back only if a
-    real sync caller ever needs it (see read_document_with_login()'s own
-    wrapper for that pattern)."""
+    """Read `path`, base64-encode it, and relay it to the deployed server,
+    authenticated as both the human and this installation. No sync wrapper:
+    every current caller is already async."""
     try:
         content_b64 = base64.b64encode(open(path, "rb").read()).decode("ascii")
     except OSError as e:
@@ -91,34 +82,25 @@ async def read_document_async(path, name, agent_id):
 
 
 async def whoami_async(agent_id):
-    """Relay to the deployed PABEL server's whoami tool: identity/ABE
-    attributes of the logged-in human and this installation of `agent_id`,
-    and whether this user is authorized to use it - the sanctioned way to
-    check login/authorization status without reading any local file. No
-    sync wrapper, same reasoning as read_document_async above."""
+    """Identity/ABE attributes of the human and this installation, and
+    whether this user is authorized for it - the sanctioned way to check
+    login status without reading any local file."""
     agent_token = agent_session.access_token(agent_id)
     return await _relay_call_async("whoami", {"agent_token": agent_token})
 
 
 async def read_document_with_login_async(path, name, agent_id):
-    """The one guided flow this whole project is built around - "try to
-    read, log in with the interactive browser+MFA flow if there's no valid
-    human session yet, then the already-authenticated retry gets
-    decrypted" - as a single deterministic operation, not something a
-    caller (the hook, or a model calling read_document as an MCP tool
-    directly) has to sequence itself by guessing what order to call things
-    in. Both core/decide.py's hook path and mcp_local_server.py's direct
-    tool-call path call this same function so their behavior can never
-    drift apart.
+    """The guided flow this project is built around - try to read, run the
+    interactive browser+MFA login if there's no valid session, then retry -
+    as one deterministic operation, so no caller has to guess the order.
+    Both the hook path and the direct tool-call path go through here, so
+    their behaviour can't drift apart.
 
-    Only a first AuthError triggers login-and-retry, exactly once - a
-    second AuthError (e.g. logged in but still lacking the required role)
-    is not retried again, just re-raised with a message distinguishing it
-    from "login itself failed". session.login() itself stays a plain
-    blocking call even here (it's a real system-browser wait, not
-    something to make concurrent) - fine for stdio MCP, which dispatches
-    one tool call at a time anyway, so nothing else needs this thread
-    during the wait."""
+    Only the first AuthError triggers login-and-retry, exactly once; a
+    second (say, logged in but lacking the required role) is re-raised with
+    a message distinguishing it from "login itself failed". session.login()
+    stays a plain blocking call - it's a real browser wait, and stdio MCP
+    dispatches one tool call at a time anyway."""
     try:
         return await read_document_async(path, name, agent_id)
     except AuthError:
@@ -139,35 +121,24 @@ def read_document_with_login(path, name, agent_id):
 
 
 REPORT_DENIAL_TIMEOUT_SECONDS = 3
-"""Deliberately much shorter than installers/base.py's HOOK_TIMEOUT_SECONDS
-(200s): that budget exists for a real, expected-to-be-slow operation (an
-interactive browser+MFA login a human is actively completing). This one is
-best-effort background bookkeeping for an operation the hook is about to
-deny anyway - every locally-denied tool call would otherwise pay however
-long a full network round-trip (or a hung connection to an unreachable
-server) takes before the calling agent even sees the deny response, turning
-routine local enforcement (e.g. DENY_AMBIGUOUS on a plain typo) into a
-multi-second stall. Confirmed necessary live: the full connector test suite
-went from ~2s to ~27s the first time this reporting was wired in, entirely
-from decide()-path tests each attempting a real connection attempt with no
-bound at all."""
+"""Much shorter than HOOK_TIMEOUT_SECONDS, which budgets for a human
+completing a browser login. This is background bookkeeping for a call about
+to be denied anyway: unbounded, every local denial would pay a full network
+round-trip - or a hung connection - before the agent even sees the response.
+Confirmed necessary live, when the test suite went from ~2s to ~27s the first
+time this was wired in."""
 
 
 async def report_denial_async(agent_id, decision_kind, reason, tool_name):
-    """Best-effort audit trail for a call core/decide.py denied entirely
-    client-side - one that never reaches read_document/whoami at all (e.g.
-    DENY_CREDENTIAL_ACCESS, DENY_HOOK_BYPASS, DENY_CONFIG_TAMPER). Without
-    this, such an attempt leaves no record anywhere: every other deny path
-    either never talks to the server, or (DENY_WITH_RELAY/DENY_AUTH_ERROR/
-    DENY_RELAY_ERROR) already gets audited server-side as a side effect of
-    the real read_document attempt inside read_document_with_login above.
+    """Best-effort audit trail for a call denied entirely client-side, which
+    never reaches read_document/whoami and so would otherwise leave no record
+    anywhere. The relay denials don't need this - they're already audited
+    server-side by the real read_document attempt.
 
-    Deliberately swallows every failure - a missing/invalid agent
-    credential, no PABEL_SERVER_URL, no human login yet, an unreachable or
-    slow-to-respond server (bounded by REPORT_DENIAL_TIMEOUT_SECONDS above).
-    decide() has already produced its Decision by the time this runs;
-    nothing here may change or meaningfully delay what the calling agent
-    gets back, only best-effort record that the attempt happened at all."""
+    Swallows every failure: a missing credential, no PABEL_SERVER_URL, no
+    login, an unreachable server. decide() has already produced its Decision
+    by the time this runs, so nothing here may change or delay what the agent
+    gets back."""
     try:
         with anyio.fail_after(REPORT_DENIAL_TIMEOUT_SECONDS):
             agent_token = agent_session.access_token(agent_id)
@@ -179,10 +150,9 @@ async def report_denial_async(agent_id, decision_kind, reason, tool_name):
 
 
 def report_denial(agent_id, decision_kind, reason, tool_name=""):
-    """Sync wrapper - see report_denial_async's docstring. The outer
-    try/except is belt-and-braces around anyio.run() itself (e.g. if it's
-    ever called from inside an existing event loop) - report_denial_async
-    already swallows everything it can reach on its own."""
+    """Sync wrapper. The outer try/except guards anyio.run() itself, e.g. if
+    called from inside an existing loop; the coroutine already swallows
+    everything it can reach."""
     try:
         anyio.run(report_denial_async, agent_id, decision_kind, reason, tool_name)
     except Exception:

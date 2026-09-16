@@ -18,6 +18,14 @@ class AuthError(Exception):
     pass
 
 
+class KeycloakUnreachable(AuthError):
+    """Keycloak could not be contacted at all, as opposed to contacting it
+    and being refused. A subclass so every existing `except AuthError`
+    keeps working; callers that can act on the difference - `doctor`, which
+    must not report a stack of dead credentials when the real problem is a
+    stopped container - catch this first."""
+
+
 class KeycloakClient:
     def __init__(self, base_url, realm, client_id):
         self.client_id = client_id
@@ -59,7 +67,7 @@ class KeycloakClient:
                 "code_verifier": code_verifier,
             }, timeout=10)
         except requests.RequestException as e:
-            raise AuthError(f"cannot reach Keycloak: {e}") from e
+            raise KeycloakUnreachable(f"cannot reach Keycloak: {e}") from e
         if resp.status_code != 200:
             raise AuthError(f"code exchange failed: {resp.status_code} {resp.text}")
         return resp.json()
@@ -72,7 +80,7 @@ class KeycloakClient:
                 "refresh_token": refresh_token,
             }, timeout=10)
         except requests.RequestException as e:
-            raise AuthError(f"cannot reach Keycloak: {e}") from e
+            raise KeycloakUnreachable(f"cannot reach Keycloak: {e}") from e
         if resp.status_code != 200:
             raise AuthError(f"token refresh failed: {resp.status_code} {resp.text}")
         return resp.json()
@@ -91,7 +99,7 @@ class KeycloakClient:
                 "client_secret": client_secret,
             }, timeout=10)
         except requests.RequestException as e:
-            raise AuthError(f"cannot reach Keycloak: {e}") from e
+            raise KeycloakUnreachable(f"cannot reach Keycloak: {e}") from e
         if resp.status_code != 200:
             raise AuthError(f"client_credentials grant failed: {resp.status_code} {resp.text}")
         return resp.json()

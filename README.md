@@ -48,20 +48,35 @@ that one employee - hand it to them out of band, for use in step 2. Full
 detail, including what each step actually does and why:
 [`server/README.md`](server/README.md).
 
-### 2. Install the enforcement for your AI coding agent (each employee, on their own machine)
+### 2. Install the enforcement for your AI coding agent (once per machine, when it is provisioned)
 
 One command, the same for **any** supported agent:
 
 ```
 pip install -e connector
-pabel-connector install <agent> --dir . --client-id CLIENT_ID --client-secret CLIENT_SECRET
+
+pabel-connector install          # pick one or several from a list
+pabel-connector install <agent> --client-id CLIENT_ID --client-secret CLIENT_SECRET
 ```
 
+This installs **machine-wide**, so the agent is enforced from every
+directory. That is the point: the credential it authenticates with lives in
+`~/.pabel/` and works everywhere, so enforcement confined to one project
+folder would stop applying the moment the agent is started somewhere else -
+and it would fail open, silently. `--dir` confines an install to one project
+and has to be asked for; `pabel-connector doctor` flags an installation that
+only covers one directory.
+
+One agent has no machine-wide location at all (`vscode`), so it is
+project-scoped and `install` says so out loud rather than looking global.
+
 Run `pabel-connector list` to see every valid `<agent>` value and its
-verification status. `--client-id`/`--client-secret` are the credential
-`create-installation` printed in step 1 for this specific employee - proof
-of *which installation* this is, verified by the server on every call,
-never just trusted because of which URL it reached.
+verification status. The credentials are what `create-installation` printed
+in step 1 for this employee - proof of *which installation* this is,
+verified by the server on every call, never just trusted because of which
+URL it reached. **Each agent needs its own pair**: that one-to-one mapping
+is what stops one agent product from authenticating as another, so the
+multi-select flow prompts for each separately rather than reusing one.
 
 **Read the verification status before trusting anything in production** -
 coverage varies by agent: some adapters are confirmed against a real, live

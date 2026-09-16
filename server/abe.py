@@ -72,16 +72,30 @@ def find_bin():
 
 
 def _run(command, args):
+    """Run an oabe_* tool and return the CompletedProcess.
+
+    The output is returned rather than discarded so a failure can say why.
+    These tools report most errors on stdout/stderr while still exiting 0,
+    so the callers below judge success by whether the expected file
+    appeared - but when it didn't, the reason is the only thing worth
+    having."""
     bin_dir = find_bin()
     run_env = os.environ.copy()
     if bin_dir:
         run_env["PATH"] = bin_dir + os.pathsep + run_env["PATH"]
-    subprocess.run(
+    return subprocess.run(
         [command] + args,
         cwd=AUTHORITY_DIR, env=run_env,
-        capture_output=True,
+        capture_output=True, text=True, errors="replace",
         creationflags=CREATE_NO_WINDOW,
     )
+
+
+def _diagnostics(proc):
+    """The tool's own output, flattened onto one line for an exception."""
+    parts = [(proc.stdout or "").strip(), (proc.stderr or "").strip()]
+    detail = " / ".join(p for p in parts if p) or "(no output)"
+    return f"exit={proc.returncode}: {detail}"
 
 
 def authority_exists():
@@ -91,9 +105,10 @@ def authority_exists():
 def setup_authority():
     """Create the authority key pair (org.mpk.cpabe / org.msk.cpabe)."""
     AUTHORITY_DIR.mkdir(exist_ok=True)
-    _run("oabe_setup", ["-s", "CP", "-p", AUTHORITY])
+    proc = _run("oabe_setup", ["-s", "CP", "-p", AUTHORITY])
     if not authority_exists():
-        raise RuntimeError("oabe_setup failed: no org.mpk.cpabe produced")
+        raise RuntimeError(
+            f"oabe_setup failed: no {AUTHORITY}.mpk.cpabe produced - {_diagnostics(proc)}")
 
 
 def keygen(attributes):
@@ -105,10 +120,13 @@ def keygen(attributes):
     os.remove(tmp)  # oabe_keygen creates <tmp>.key itself
     tmp_key = Path(f"{tmp}.key")
     try:
-        _run("oabe_keygen", ["-s", "CP", "-p", AUTHORITY,
-                             "-i", attributes, "-o", tmp])
+        proc = _run("oabe_keygen", ["-s", "CP", "-p", AUTHORITY,
+                                    "-i", attributes, "-o", tmp])
         if not tmp_key.exists():
-            raise RuntimeError(f"oabe_keygen failed for attributes: {attributes!r}")
+            raise RuntimeError(
+                f"oabe_keygen failed for attributes: {attributes!r} - "
+                f"{_diagnostics(proc)} (authority dir: {AUTHORITY_DIR}, "
+                f"master key present: {(AUTHORITY_DIR / f'{AUTHORITY}.msk.cpabe').exists()})")
         return tmp_key.read_bytes()
     finally:
         if tmp_key.exists():

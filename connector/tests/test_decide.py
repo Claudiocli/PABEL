@@ -152,30 +152,23 @@ def test_deny_ambiguous_when_no_concrete_file_found():
     assert decide(call, AGENT_ID).kind == DecisionKind.DENY_AMBIGUOUS
 
 
-def test_deny_config_tamper_for_own_hook_config():
+@pytest.mark.parametrize("tool,target", [
+    ("Write", ".claude/settings.json"),                        # project scope
+    ("Write", "C:\\Users\\alice\\.claude\\settings.json"),      # --global scope
+    ("Edit", ".mcp.json"),                                     # MCP registration
+])
+def test_deny_config_tamper(tool, target):
     """The bypass this closes: nothing previously stopped a model from
     rewriting its own agent's hook/MCP config file to change which
-    installation's credential gets used (see core/decide.py's own
-    docstring and hook.py's agent_id derivation) - or to repoint the
-    deployed server's own URL entirely."""
-    call = NormalizedCall(tool_name="Write", tool_input={"file_path": ".claude/settings.json"},
-                           is_write=True, write_target=".claude/settings.json")
-    assert decide(call, AGENT_ID).kind == DecisionKind.DENY_CONFIG_TAMPER
+    installation's credential gets used (see core/decide.py's own docstring
+    and hook.py's agent_id derivation) - or to repoint the deployed server's
+    own URL entirely.
 
-
-def test_deny_config_tamper_for_global_config_path():
-    # A --global config path still contains the same relative fragment -
-    # see detection.py's is_pabel_hook_config_target docstring.
-    call = NormalizedCall(
-        tool_name="Write",
-        tool_input={"file_path": "C:\\Users\\alice\\.claude\\settings.json"},
-        is_write=True, write_target="C:\\Users\\alice\\.claude\\settings.json")
-    assert decide(call, AGENT_ID).kind == DecisionKind.DENY_CONFIG_TAMPER
-
-
-def test_deny_config_tamper_for_mcp_json():
-    call = NormalizedCall(tool_name="Edit", tool_input={"file_path": ".mcp.json"},
-                           is_write=True, write_target=".mcp.json")
+    Which *paths* count is exhaustively covered in test_detection.py; these
+    cases only prove decide() actually routes through that check, in both
+    install scopes and for both write-shaped tools."""
+    call = NormalizedCall(tool_name=tool, tool_input={"file_path": target},
+                           is_write=True, write_target=target)
     assert decide(call, AGENT_ID).kind == DecisionKind.DENY_CONFIG_TAMPER
 
 
@@ -187,22 +180,26 @@ def test_allow_write_whose_content_merely_mentions_a_hook_config_path():
     assert decide(call, AGENT_ID).kind == DecisionKind.ALLOW
 
 
-@pytest.mark.parametrize("call,expected_kind", [
-    (NormalizedCall(tool_name="Read",
-                     tool_input={"file_path": str(agent_session.CREDENTIALS_FILE)}),
+@pytest.mark.parametrize("make_call,expected_kind", [
+    # Built lazily: CREDENTIALS_FILE is redirected per-test by conftest's
+    # isolate_pabel_state, and a parametrize argument is evaluated at
+    # collection time - before that redirection exists.
+    (lambda: NormalizedCall(tool_name="Read",
+                            tool_input={"file_path": str(agent_session.CREDENTIALS_FILE)}),
      DecisionKind.DENY_CREDENTIAL_ACCESS),
-    (NormalizedCall(tool_name="Write", tool_input={"file_path": ".mcp.json"},
-                     is_write=True, write_target=".mcp.json"),
+    (lambda: NormalizedCall(tool_name="Write", tool_input={"file_path": ".mcp.json"},
+                            is_write=True, write_target=".mcp.json"),
      DecisionKind.DENY_CONFIG_TAMPER),
-    (NormalizedCall(tool_name="Write", tool_input={"file_path": "test.abe"},
-                     is_write=True, write_target="test.abe"),
+    (lambda: NormalizedCall(tool_name="Write", tool_input={"file_path": "test.abe"},
+                            is_write=True, write_target="test.abe"),
      DecisionKind.DENY_MUTATING),
 ])
-def test_local_denials_are_reported_to_the_server(monkeypatch, call, expected_kind):
+def test_local_denials_are_reported_to_the_server(monkeypatch, make_call, expected_kind):
     """Without this, a locally-denied call (one that never itself talks to
     the server - unlike DENY_WITH_RELAY/DENY_AUTH_ERROR/DENY_RELAY_ERROR,
     already audited server-side as a side effect of the real attempt) would
     leave no record anywhere at all - see relay.report_denial's docstring."""
+    call = make_call()
     calls = []
     monkeypatch.setattr(decide_module.relay, "report_denial",
                         lambda *args: calls.append(args))

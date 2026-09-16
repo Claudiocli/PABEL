@@ -1,13 +1,17 @@
-"""cli/main.py's --global flag: only offered for agents with a confirmed
-user-level config location (installers/base.py's global_config_path()) -
-rejecting cleanly for the rest (vscode) rather than guessing a path, the
-same mistake vscode's workspace path already made once (see
-docs/phase2-engineering-notes.md)."""
+"""cli/main.py's install/uninstall scope.
+
+Machine-wide is the DEFAULT wherever a confirmed user-level config location
+exists (installers/base.py's global_config_path()); `--dir` confines an
+install to one project and has to be asked for. Agents with no confirmed
+global location (vscode) are still rejected for --global rather than sent to
+a guessed path - the same mistake vscode's workspace path already made once
+(see docs/phase2-engineering-notes.md)."""
 
 from pathlib import Path
 
 import pabel_connector.cli.main as main_module
 from pabel_connector.cli.main import main
+from pabel_connector.installers import cursor
 
 
 def test_install_global_rejected_for_unsupported_agent(tmp_path, capsys):
@@ -40,15 +44,18 @@ def test_uninstall_global_rejected_for_unsupported_agent(tmp_path, capsys):
     assert "no confirmed global" in capsys.readouterr().err
 
 
-def test_install_rejected_for_global_only_agent_without_global_flag(tmp_path, capsys):
-    # codex-cli/chatgpt-desktop share one file with no project-scoped
-    # variant at all - the inverse of vscode's rejection above (missing
-    # --global, not an unsupported one).
-    exit_code = main(["install", "codex-cli", "--dir", str(tmp_path),
+def test_global_only_agent_installs_globally_and_says_dir_was_ignored(tmp_path, monkeypatch, capsys):
+    # codex-cli/chatgpt-desktop share one file with no project-scoped variant
+    # at all. There is exactly one place the install can go, so --dir is
+    # reported as ignored rather than failing the run over a missing flag.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(main_module.agent_session, "store_credentials", lambda *a, **k: None)
+    exit_code = main(["install", "codex-cli", "--dir", str(tmp_path / "some-project"),
                       "--client-id", "x", "--client-secret", "y"])
-    assert exit_code == 2
-    assert "no project-scoped install" in capsys.readouterr().err
-    assert not (tmp_path / ".codex").exists()
+    assert exit_code == 0
+    assert "--dir was ignored" in capsys.readouterr().out
+    assert (tmp_path / ".codex" / "config.toml").exists()
+    assert not (tmp_path / "some-project" / ".codex").exists()
 
 
 def test_install_and_uninstall_global_only_agent_via_cli(tmp_path, monkeypatch):
@@ -69,7 +76,31 @@ def test_install_and_uninstall_global_only_agent_via_cli(tmp_path, monkeypatch):
     assert "pabel-connector-codex-cli" not in data["mcp_servers"]
 
 
-def test_uninstall_rejected_for_global_only_agent_without_global_flag(tmp_path, capsys):
-    exit_code = main(["uninstall", "codex-cli", "--dir", str(tmp_path)])
-    assert exit_code == 2
-    assert "no project-scoped install" in capsys.readouterr().err
+def test_uninstall_without_flags_removes_the_machine_wide_install(tmp_path, monkeypatch):
+    """uninstall's default scope must match install's. When they disagreed,
+    `uninstall` reported success while the real wiring stayed in place."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(main_module.agent_session, "store_credentials", lambda *a, **k: None)
+    main(["install", "cursor", "--client-id", "x", "--client-secret", "y"])
+    assert (tmp_path / ".cursor" / "hooks.json").exists()
+
+    assert main(["uninstall", "cursor"]) == 0
+    data = main_module.base.read_json(tmp_path / ".cursor" / "hooks.json")
+    assert not any(main_module._command_present(data, main_module.base.hook_command(k))
+                   for k in cursor.HOOK_KEYS)
+
+
+def test_install_with_no_flags_goes_machine_wide_not_into_the_cwd(tmp_path, monkeypatch):
+    """The default that matters: PABEL is provisioned once per machine. An
+    install scoped to whatever directory the admin happened to be standing in
+    would stop enforcing the moment the agent is started anywhere else, while
+    the credential in ~/.pabel keeps working from everywhere."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(main_module.agent_session, "store_credentials", lambda *a, **k: None)
+    project = tmp_path / "some-project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+
+    assert main(["install", "cursor", "--client-id", "x", "--client-secret", "y"]) == 0
+    assert (tmp_path / ".cursor" / "hooks.json").exists()
+    assert not (project / ".cursor").exists()

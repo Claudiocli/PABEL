@@ -1,58 +1,27 @@
 """The one agent-agnostic policy: given a NormalizedCall, decide whether it
-touches a PABEL-protected .abe file and, if so, what should happen. Every
-adapter's render() turns this same Decision into its own agent's response
-shape - this function never sees or cares which agent produced the call,
-beyond agent_id itself: purely a local key selecting which of this
-installation's own stored credentials to use (agent_session.py) - never a
-value sent anywhere as a claimed identity. See server/core.py's
-resolve_agent() for what the server actually trusts (a verified Keycloak
-token, not this string).
+touches a PABEL-protected .abe file and what should happen.
 
-On an otherwise-relayable read, the actual relay (including running an
-interactive browser+MFA login itself if there's no valid human session
-yet) is delegated to pabel_client/relay.py's read_document_with_login() -
-the same guided "file -> login if needed -> MCP decrypts" flow that
-mcp_local_server.py's directly-callable read_document tool also uses, so
-neither a blocked file read nor a model calling the tool explicitly can
-diverge in behavior or leave a model to guess the right order of steps
-itself.
+Never sees which agent produced the call, beyond `agent_id` - and that is
+purely a local key selecting which stored credential to use, never a claimed
+identity sent anywhere. What the server actually trusts is a verified
+Keycloak token; see server/core.py's resolve_agent().
 
-Since agent_id is never trusted as an identity, the one thing that DOES
-have to be protected is whatever ties "this hook fired" to "which agent_id
-to use" in the first place - the agent_id argument baked into this
-agent's own hook config file at install time (see hook.py's dispatch and
-installers/*.py). DENY_CONFIG_TAMPER (detection.is_pabel_hook_config_target)
-denies any write to that file, for exactly the same reason
-DENY_CREDENTIAL_ACCESS denies touching the credential store itself:
-without it, a model could rewrite its own hook to authenticate as a
-different, already-installed agent product, or repoint the deployed
-server's own URL - achieving the same result as stealing a credential
-without ever having to read one.
+Since agent_id isn't an identity, what must be protected is whatever ties
+"this hook fired" to "which agent_id to use" - the value baked into the
+agent's own config file at install time. DENY_CONFIG_TAMPER denies writes to
+that file for the same reason DENY_CREDENTIAL_ACCESS denies touching the
+credential store: rewriting it would let a model authenticate as a different
+installed product, or repoint the server URL, without ever reading a secret.
 
-Every DENY_* produced here that never itself talks to the server
-(DENY_CREDENTIAL_ACCESS, DENY_HOOK_BYPASS, DENY_CONFIG_TAMPER,
-DENY_MUTATING, DENY_OABE_BINARY, DENY_AMBIGUOUS - via _deny_locally() below)
-is also best-effort reported to it (pabel_client/relay.report_denial), so a
-tampering attempt still leaves a record in the same audit trail as every
-other operation, even though nothing about the tampering attempt itself
-required a network call to be denied.
-
-Separately, every PABEL-relevant outcome here (every DENY_* plus the two
-"aware" ALLOWs - a direct call to pabel's/mcp_local_server.py's own tools -
-never the generic "this call has nothing to do with PABEL" fallback ALLOWs)
-is also best-effort written to pabel_client/audit_log.py's local,
-confidentiality-only encrypted log (_log_locally() below) - a deliberately
-different, complementary record from relay.report_denial's: this one exists
-so an employer can cross-reference "what this endpoint's own timeline says
-happened" against "what the server's audit trail says happened", including
-for the relay path (DENY_WITH_RELAY/DENY_AUTH_ERROR/DENY_RELAY_ERROR),
-which report_denial() deliberately skips (already server-audited via the
-real read_document attempt) but which _log_locally() does not skip - the
-two logs answer different questions, not the same one twice. See
-audit_log.py's own docstring for exactly what this guarantees
-(confidentiality against a third party who later finds the file) and does
-not (integrity against the very agent it records - structurally impossible
-for a local, agent-writable file, encrypted or not).
+**Two complementary audit trails, answering different questions.**
+`relay.report_denial` records denials that never otherwise reach the server,
+so a tampering attempt still lands in the server's own trail. `_log_locally`
+writes every PABEL-relevant outcome - including the relay paths, which
+report_denial skips as already server-audited - to a local encrypted log, so
+an employer can cross-reference the endpoint's timeline against the server's.
+Both are best-effort and neither can change what's returned. See
+audit_log.py for what that local log does (confidentiality) and does not
+(integrity against the agent it records) guarantee.
 """
 
 from ..pabel_client import agent_session, audit_log, relay
@@ -80,15 +49,9 @@ def _log_locally(kind: DecisionKind, reason: str, agent_id: str, tool_name: str,
 
 def _deny_locally(kind: DecisionKind, reason: str, agent_id: str, tool_name: str,
                   target: str = None) -> Decision:
-    """Build a deny Decision for one of the "never reaches the server on its
-    own" kinds: best-effort report it to the deployed server's audit trail
-    (relay.report_denial) so it isn't invisible everywhere, and best-effort
-    record it in the local encrypted log too (_log_locally) - see this
-    module's own docstring for why both exist and answer different
-    questions. Neither call can fail loudly or change what's returned below.
-    Not used for DENY_WITH_RELAY/DENY_AUTH_ERROR/DENY_RELAY_ERROR, which log
-    locally too but skip relay.report_denial specifically (already
-    server-audited via the real read_document attempt)."""
+    """Deny for one of the kinds that never reaches the server on its own, so
+    it gets reported there as well as logged locally. Not used for the relay
+    outcomes, which log locally but skip report_denial as already audited."""
     relay.report_denial(agent_id, kind.name, reason, tool_name)
     _log_locally(kind, reason, agent_id, tool_name, target=target)
     return Decision(kind, reason=reason)
@@ -96,9 +59,8 @@ def _deny_locally(kind: DecisionKind, reason: str, agent_id: str, tool_name: str
 
 def decide(call: NormalizedCall, agent_id: str) -> Decision:
     # Checked before anything else, regardless of read/write/execute: this
-    # installation's own local secrets (session.py/agent_session.py) are
-    # never a legitimate target for the model itself, and none of the
-    # checks below would otherwise catch a plain read of them.
+    # installation's own secrets are never a legitimate target, and no check
+    # below would otherwise catch a plain read of them.
     if touches_pabel_credential_store(call.tool_input):
         return _deny_locally(
             DecisionKind.DENY_CREDENTIAL_ACCESS,
@@ -122,25 +84,19 @@ def decide(call: NormalizedCall, agent_id: str) -> Decision:
             agent_id, call.tool_name)
 
     if call.mcp_target and call.mcp_target[0] == PABEL_CONNECTOR_MCP_SERVER_NAME:
-        # mcp_local_server.py's own whoami/read_document/login - always
-        # sanctioned, and needs no injected agent_token (unlike the branch
-        # below): it resolves this installation's identity internally,
-        # from how it was registered - see detection.py's constant.
+        # Needs no injected agent_token, unlike the branch below: this server
+        # resolves the installation's identity internally, from how it was
+        # registered.
         _log_locally(DecisionKind.ALLOW, "Direct call to this installation's own "
                      "whoami/read_document/login tools.", agent_id, call.tool_name,
                      target=call.mcp_target[1])
         return Decision(DecisionKind.ALLOW)
 
     if call.mcp_target and call.mcp_target[0] == PABEL_MCP_SERVER_NAME:
-        # A direct model call to pabel's own tools (whoami/read_document) is
-        # always sanctioned - but server/core.py's resolve_agent() now
-        # requires an agent_token argument the model can never legitimately
-        # hold itself. Inject this installation's own credential before
-        # allowing the call through, so the model never sees the secret and
-        # never needs to. An adapter that can't rewrite input (see
-        # Decision.updated_input's docstring) just allows the call
-        # unmodified - the server then rejects the missing/invalid
-        # agent_token with a clean error, a safe fallback, not a hole.
+        # resolve_agent() requires an agent_token the model can never
+        # legitimately hold, so inject this installation's own. An adapter
+        # that can't rewrite input allows the call unmodified and the server
+        # rejects it cleanly - a safe fallback, not a hole.
         try:
             token = agent_session.access_token(agent_id)
         except AuthError:
@@ -157,10 +113,9 @@ def decide(call: NormalizedCall, agent_id: str) -> Decision:
                         updated_input={**call.tool_input, "agent_token": token})
 
     if call.is_write:
-        # Checked against write_target specifically, never against the
-        # whole tool_input: a write's *content* legitimately mentioning a
-        # protected path (writing documentation, for instance) must not be
-        # confused with writing *to* one.
+        # write_target specifically, never the whole tool_input: a write whose
+        # *content* mentions a protected path must not be confused with a
+        # write *to* one.
         target_path = call.write_target or ""
         if ENCRYPTED_FILE.search(target_path) or DOCUMENTS_PATH.search(target_path):
             return _deny_locally(

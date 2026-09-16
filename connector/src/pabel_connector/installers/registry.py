@@ -11,6 +11,7 @@ from . import (
     continue_dev,
     copilot_cli,
     cursor,
+    opencode,
     vscode,
     windsurf,
 )
@@ -21,6 +22,7 @@ INSTALLERS = {
     "copilot-cli": copilot_cli,
     "cursor": cursor,
     "windsurf": windsurf,
+    "opencode": opencode,
     "codex-cli": codex_cli,
     "chatgpt-desktop": chatgpt_desktop,
     "cline": cline,

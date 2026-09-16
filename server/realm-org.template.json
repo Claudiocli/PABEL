@@ -20,7 +20,9 @@
   },
   "roles": {
     "realm": [
-      {"name": "agent_claude_code_user", "description": "May use the claude-code agent"}
+      {"name": "agent_claude_code_user", "description": "May use the claude-code agent"},
+      {"name": "agent_opencode_user", "description": "May use the OpenCode agent"},
+      {"name": "agent_codex_user", "description": "May use the codex agent"}
     ]
   },
   "clients": [

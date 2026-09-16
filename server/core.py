@@ -1,52 +1,33 @@
 """Shared identity/decryption core for the PABEL MCP service.
 
-Two principals must check out before any document content is returned -
-see mcp_server.py, the only thing that calls into this module:
+Two principals must check out before any content is returned:
 
   1. The human, via current_identity(): re-verifies a Keycloak bearer
-     token's signature/issuer/expiry fresh on every single call (never
-     cached as "logged in"). Two transports, two sources for that token,
-     same verification either way:
-       - streamable-http (a remote, shared server - see mcp_server.py):
-         the token mcp.server.auth's bearer-auth middleware already
-         verified for this request via token_verifier.py's
-         KeycloakTokenVerifier, read back out via
-         mcp.server.auth.middleware.auth_context.get_access_token().
-       - stdio (a local, per-session process): .session.json, written
-         only by login_with_browser() below, i.e. only after a real
-         Authorization Code + PKCE login through Keycloak's own hosted
-         page, which enforces whatever MFA the realm requires.
-     There is no weaker fallback identity of any kind in either case: no
-     verified token and no session file means no identity, full stop.
+     token's signature/issuer/expiry on every call, never cached as "logged
+     in". The token comes from the auth middleware under streamable-http, or
+     from .session.json under stdio - written only by a real Authorization
+     Code + PKCE login through Keycloak's hosted page, so realm MFA always
+     applies. There is no weaker fallback: no verified token means no
+     identity, full stop.
   2. The agent, via resolve_agent(): every request carries its own
-     per-installation Keycloak client_credentials token (an `agent_token`
-     tool argument - see mcp_server.py), verified here exactly like the
-     human's (kc.verify() - signature/issuer/expiry), with its verified
-     `azp` claim (KeycloakAuth.client_id_of()) resolved through a Postgres
-     agent_installations row (server/agents_admin.py, admin-run only) to
-     find which agent_id product it belongs to. There is no fixed,
-     trusted-by-deployment-topology identity of any kind: a single shared
-     server instance serves every agent product, and "which agent is
-     calling" is proven fresh on every single call, the same as human
-     identity is. Three failure modes are a hard AuthError (a forged/
-     expired token; a client_id with no installation row, or a revoked
-     one; a disabled agent product) and one is soft: a *known,
-     un-revoked* installation whose product's required role the current
-     user's token lacks contributes zero attributes rather than erroring
-     - see below.
+     per-installation client_credentials token, verified identically, whose
+     `azp` claim resolves through an admin-managed agent_installations row
+     to an agent_id. Nothing is trusted by deployment topology - one shared
+     server serves every product, and which agent is calling is proven
+     fresh per call. A forged/expired token, an unknown or revoked
+     installation, and a disabled product are hard errors; a known
+     installation whose required role the user lacks is soft, contributing
+     zero attributes instead.
 
-read_document (mcp_server.py) combines both principals' ABE attributes into
-one key via agent_session_key() - a document section decrypts only when
-its policy is satisfied by the human *and* the agent together. An agent
-product with no registry row, or whose required role this user's token
-doesn't carry, contributes no attribute at all, so it fails such a policy
-implicitly, with no special-case deny logic anywhere here.
+agent_session_key() combines both principals' attributes into one ABE key,
+so a section decrypts only when the human *and* the agent together satisfy
+its policy. An agent contributing no attribute fails such a policy
+implicitly - there is no special-case deny logic anywhere here.
 
-Every operation is wrapped in audit_op() below, which appends one record
-per call to both audit.jsonl and the Postgres audit_log mirror (db.py) -
-who (once known), which agent, what, on what path, and the outcome. This
-is the accountability trail the whole project exists to provide: "who or
-what did this" must be answerable from the log alone.
+Every operation is wrapped in audit_op(), which writes one record per call
+to audit.jsonl and the Postgres mirror. That trail is what the project
+exists to provide: "who or what did this" must be answerable from the log
+alone.
 """
 
 import contextlib
@@ -116,13 +97,10 @@ def audit_op(client, operation, path=None):
             ctx["detail"] = "2/3 sections readable"  # optional
             return {...}
 
-    AuthError (bad/missing/expired identity or agent key) and
-    PermissionError (a valid identity asking for something it isn't
-    entitled to) are logged as "denied"; any other exception as "error";
-    both re-raised unchanged - this only observes, it never changes
-    behavior. This only accounts for calls that go through here in the
-    first place - code with direct access to this process bypasses it
-    entirely, same as it bypasses current_identity(); that is a
+    AuthError and PermissionError log as "denied", anything else as "error";
+    all are re-raised unchanged, since this only observes. It accounts only
+    for calls that go through here - code with direct access to this process
+    bypasses it, the same way it bypasses current_identity(). That is a
     local-code-execution boundary, not something logging can close.
     """
     ctx = {"username": None, "agent_id": None, "auth_source": None, "detail": None}
@@ -142,10 +120,9 @@ def audit_op(client, operation, path=None):
 
 
 class Session:
-    """A Keycloak token pair sourced only from .session.json (see module
-    docstring - there is no fallback identity). Re-read whenever the
-    file's mtime changes, so logging in as someone else (or logging out)
-    takes effect on the very next call, no process restart needed."""
+    """A Keycloak token pair sourced only from .session.json. Re-read
+    whenever its mtime changes, so logging in as someone else, or out, takes
+    effect on the next call with no process restart."""
 
     def __init__(self):
         self.tokens = None
@@ -164,10 +141,9 @@ class Session:
         self._session_mtime = mtime
 
     def source(self):
-        """Recorded in every audit row: this project only ever produces a
-        session via the MFA-capable browser flow, so this is constant
-        today - kept as an explicit field rather than dropped, so an
-        auditor reading audit_log doesn't have to assume it."""
+        """Constant today - sessions only ever come from the MFA-capable
+        browser flow - but kept as an explicit audit field so an auditor
+        doesn't have to assume it."""
         return "browser_session"
 
     def access_token(self):
@@ -226,16 +202,13 @@ def logout():
 
 def current_identity():
     """Re-verify the bearer token and return (username, attributes, roles).
-    Called at the start of every operation: this is the actual
-    access-control checkpoint, not a one-time login. roles feeds
-    resolve_agent() below - it's kept alongside attributes here rather
-    than re-verifying the token a second time to get it.
+    Runs at the start of every operation: this is the access-control
+    checkpoint, not a one-time login. `roles` feeds resolve_agent(), kept
+    here rather than verifying the token a second time to get it.
 
-    Prefers the per-request token mcp.server.auth already verified
-    (streamable-http transport); falls back to the stdio session file
-    only when there's no such request context (get_access_token()
-    returns None outside of a streamable-http request, including the
-    entire stdio transport - see token_verifier.py)."""
+    Prefers the per-request token the auth middleware already verified
+    (streamable-http), falling back to the session file when there's no such
+    request context - which includes the whole stdio transport."""
     from mcp.server.auth.middleware.auth_context import get_access_token
     request_token = get_access_token()
     if request_token is not None and request_token.claims:
@@ -247,33 +220,22 @@ def current_identity():
 
 
 def resolve_agent(agent_token, user_roles):
-    """Verify a per-installation agent credential (a Keycloak
-    client_credentials access token) and return (agent_id, attributes) -
-    attributes is "" if this user isn't authorized to use this agent.
+    """Verify a per-installation agent credential and return (agent_id,
+    attributes) - attributes is "" if this user isn't authorized for it.
 
-    Unlike the human's identity, this token always arrives as an explicit
-    tool argument (see mcp_server.py) rather than the connection's own
-    bearer token, so it is verified here directly - the same check
-    (kc.verify(): signature/issuer/expiry) current_identity() runs for the
-    human's token.
+    Note the agent_id comes out of the installations table *after* the token
+    verifies; it is never a parameter, so no caller can claim one.
 
-    Three hard AuthError cases - nothing legitimate should ever hit them:
-      - the token doesn't verify at all (forged, expired, wrong issuer).
-      - its verified client_id (KeycloakAuth.client_id_of() - the `azp`
-        claim) has no agent_installations row, or that row is revoked: an
-        installation this server has never heard of, or one an admin has
-        since revoked.
-      - the installation is valid, but its agent_id product is unknown or
-        disabled.
-    One soft case, same semantics as before this was per-installation: the
-    installation is valid, but user_roles doesn't include its product's
-    required_role (server/agents_admin.py, admin-assigned per user) -
-    returns "" rather than raising. This is a *known* agent installation
-    the current user simply isn't authorized for, so it contributes no
-    attribute to the combined key - the same implicit, section-by-section
-    cryptographic denial as an unrecognized installation, just scoped to
-    one user instead of everyone. whoami still succeeds; only agent-gated
-    sections of read_document come back "[ACCESS DENIED]"."""
+    Unlike the human's, this token arrives as an explicit tool argument
+    rather than the connection's bearer token, so it's verified here
+    directly - the same kc.verify() current_identity() runs.
+
+    Hard AuthError if the token doesn't verify, if its `azp` has no
+    installation row or a revoked one, or if the product is unknown or
+    disabled. Soft if the installation is valid but user_roles lacks the
+    product's required_role: returns "" instead of raising, so the agent
+    contributes nothing to the combined key. whoami still succeeds; only
+    agent-gated sections come back "[ACCESS DENIED]"."""
     try:
         claims = kc.verify(agent_token)
     except AuthError as e:
@@ -291,18 +253,15 @@ def resolve_agent(agent_token, user_roles):
 
 
 def agent_session_key(username, user_attributes, agent_id, agent_attributes):
-    """The combined (user, agent) ABE key: satisfies only a policy that
-    both the human's and the agent's attributes together satisfy. Regenerated
-    whenever the hashed attribute string has drifted since the last call -
-    OpenABE has no native key revocation (confirmed against its source), so
-    this hash-and-compare against db.get_agent_key()'s cache is the only way
-    a Keycloak-side attribute change ever takes effect. Cached per (username,
-    agent_id) pair.
+    """The combined (user, agent) ABE key, satisfying only policies both sets
+    of attributes together satisfy. Cached per (username, agent_id) and
+    regenerated whenever the hashed attribute string drifts: OpenABE has no
+    native key revocation, so this hash-and-compare is the only way a
+    Keycloak-side attribute change ever takes effect.
 
-    agent_attributes may be "" (resolve_agent() found a known agent this
-    user isn't authorized for) - the combined key then carries only the
-    user's own attributes, so any policy requiring an agent attribute
-    fails, same as if the agent didn't exist at all."""
+    agent_attributes may be "" - the key then carries only the user's own
+    attributes, so any agent-gated policy fails as if the agent didn't
+    exist."""
     if not user_attributes:
         raise AuthError(
             f"{username!r} has no ABE attributes assigned - ask a Keycloak "

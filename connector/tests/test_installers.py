@@ -135,20 +135,11 @@ def _codex_home_toml(tmp_path):
     return _tomlkit.parse(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
-def test_codex_cli_status_is_mcp_only_not_gap(tmp_path):
-    # Codex CLI's hooks feature is still documented as unavailable on
-    # Windows at all (see installers/codex_cli.py) - but unlike cline/
-    # continue-dev, there IS a real install action: MCP tool registration
-    # in the config.toml it shares with the ChatGPT desktop app.
-    assert INSTALLERS["codex-cli"].status == "mcp-only"
-
-
-def test_codex_cli_install_requires_global(tmp_path):
-    from pabel_connector.cli.main import main as cli_main
-    exit_code = cli_main(["install", "codex-cli", "--dir", str(tmp_path),
-                          "--client-id", "x", "--client-secret", "y"])
-    assert exit_code == 2
-    assert not (tmp_path / ".codex").exists()
+@pytest.mark.parametrize("agent", ["codex-cli", "chatgpt-desktop"])
+def test_codex_family_status_is_mcp_only_not_gap(agent):
+    # Unlike cline/continue-dev there IS a real install action for these two:
+    # MCP tool registration in the config.toml they share.
+    assert INSTALLERS[agent].status == "mcp-only"
 
 
 def test_codex_cli_install_registers_its_own_mcp_server(tmp_path, monkeypatch):
@@ -275,18 +266,6 @@ def test_codex_family_uninstall_does_not_remove_the_shared_skill_file(tmp_path, 
     assert _codex_skill_path(tmp_path).exists()
 
 
-def test_chatgpt_desktop_status_is_mcp_only(tmp_path):
-    assert INSTALLERS["chatgpt-desktop"].status == "mcp-only"
-
-
-def test_chatgpt_desktop_install_requires_global(tmp_path):
-    from pabel_connector.cli.main import main as cli_main
-    exit_code = cli_main(["install", "chatgpt-desktop", "--dir", str(tmp_path),
-                          "--client-id", "x", "--client-secret", "y"])
-    assert exit_code == 2
-    assert not (tmp_path / ".codex").exists()
-
-
 def test_claude_code_install_writes_nested_pretooluse_hook(tmp_path):
     # Claude Code gets no privileged installation path - the exact same
     # `pabel-connector install claude-code --dir .` every other agent uses,
@@ -378,7 +357,7 @@ def test_global_supported_agents_match_confirmed_docs():
     supported = {key for key, installer in INSTALLERS.items()
                 if hasattr(installer, "GLOBAL_CONFIG_RELATIVE_PATH")}
     assert supported == {"claude-code", "cursor", "windsurf", "copilot-cli",
-                         "codex-cli", "chatgpt-desktop"}
+                         "codex-cli", "chatgpt-desktop", "opencode"}
     assert "vscode" not in supported
 
 
@@ -414,3 +393,138 @@ def test_copilot_cli_global_install_writes_to_hooks_directory(tmp_path, monkeypa
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     INSTALLERS["copilot-cli"].install(tmp_path / "some-project", global_=True)
     assert (tmp_path / ".copilot" / "hooks" / "pabel-copilot-cli.json").exists()
+
+
+# --- opencode -------------------------------------------------------------
+# The only installer that writes executable code (a .js bridge) rather than
+# a command string in a config - see installers/opencode.py's docstring.
+
+def test_opencode_install_writes_the_bridge_plugin_and_mcp_entry(tmp_path):
+    opencode = INSTALLERS["opencode"]
+    opencode.install(tmp_path)
+    plugin = tmp_path / ".opencode" / "plugins" / "pabel.js"
+    assert plugin.exists()
+    config = json.loads((tmp_path / "opencode.json").read_text())
+    assert config["mcp"]["pabel-connector"]["type"] == "local"
+    assert config["mcp"]["pabel-connector"]["enabled"] is True
+
+
+def test_opencode_install_substitutes_every_template_token(tmp_path):
+    """A leftover __PABEL_*__ token would be a syntax error in the shipped
+    plugin - opencode would fail to load it and enforcement would silently
+    not exist."""
+    INSTALLERS["opencode"].install(tmp_path)
+    text = (tmp_path / ".opencode" / "plugins" / "pabel.js").read_text()
+    assert "__PABEL_" not in text
+    assert "pabel_connector.hook" in text
+    assert str(base.HOOK_TIMEOUT_SECONDS * 1000) in text
+
+
+def test_opencode_install_uses_plural_plugins_directory_not_singular(tmp_path):
+    # opencode accepts both, but plural is the current form - writing the
+    # singular one would be the installers/vscode.py mistake all over again.
+    INSTALLERS["opencode"].install(tmp_path)
+    assert (tmp_path / ".opencode" / "plugins").is_dir()
+    assert not (tmp_path / ".opencode" / "plugin").exists()
+
+
+def test_opencode_global_install_uses_dot_config_opencode(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    INSTALLERS["opencode"].install(tmp_path / "some-project", global_=True)
+    assert (tmp_path / ".config" / "opencode" / "plugins" / "pabel.js").exists()
+    assert (tmp_path / ".config" / "opencode" / "opencode.json").exists()
+
+
+def test_opencode_install_preserves_unrelated_config(tmp_path):
+    config = tmp_path / "opencode.json"
+    config.write_text(json.dumps({
+        "model": "anthropic/claude-opus-5",
+        "mcp": {"someone-elses": {"type": "local", "command": ["x"]}},
+    }))
+    INSTALLERS["opencode"].install(tmp_path)
+    data = json.loads(config.read_text())
+    assert data["model"] == "anthropic/claude-opus-5"
+    assert "someone-elses" in data["mcp"]
+    assert "pabel-connector" in data["mcp"]
+
+
+def test_opencode_install_writes_into_an_existing_jsonc_not_a_new_json(tmp_path):
+    """opencode reads both opencode.json and opencode.jsonc and its docs
+    don't say which wins when both exist - so writing a second file next to
+    one the user already has could land the registration somewhere opencode
+    never looks. Found 2026-09-15 on this project's own dev machine, which
+    already had a `.jsonc`."""
+    existing = tmp_path / "opencode.jsonc"
+    existing.write_text('{"$schema": "https://opencode.ai/config.json"}')
+    INSTALLERS["opencode"].install(tmp_path)
+    assert not (tmp_path / "opencode.json").exists()
+    data = json.loads(existing.read_text())
+    assert "pabel-connector" in data["mcp"]
+    assert data["$schema"] == "https://opencode.ai/config.json"
+
+
+def test_opencode_install_refuses_to_destroy_comments_in_a_jsonc(tmp_path):
+    """json.dumps can't round-trip comments, so a commented config is left
+    strictly untouched and the entry is printed to paste instead."""
+    existing = tmp_path / "opencode.jsonc"
+    original = '{\n  // my notes\n  "$schema": "https://opencode.ai/config.json"\n}'
+    existing.write_text(original)
+    message = INSTALLERS["opencode"].install(tmp_path)
+    assert existing.read_text() == original
+    assert "contains comments" in message
+    assert "pabel-connector" in message
+    # The plugin - the part that actually enforces - is written regardless.
+    assert (tmp_path / ".opencode" / "plugins" / "pabel.js").exists()
+
+
+def test_opencode_uninstall_removes_every_artifact_it_created(tmp_path, monkeypatch):
+    """Found while moving a real install from project to machine-wide scope:
+    uninstall removed "pabel-connector" but left the deployed "pabel" entry
+    and an empty .opencode/plugins/ behind, in a file it had just reported as
+    cleaned."""
+    monkeypatch.setenv("PABEL_SERVER_URL", "http://localhost:8001/mcp")
+    opencode = INSTALLERS["opencode"]
+    opencode.install(tmp_path)
+    assert set(json.loads((tmp_path / "opencode.json").read_text())["mcp"]) == {
+        "pabel-connector", "pabel"}
+
+    opencode.uninstall(tmp_path)
+    assert not (tmp_path / "opencode.json").exists()
+    assert not (tmp_path / ".opencode").exists()
+
+
+def test_opencode_uninstall_keeps_a_config_that_holds_anything_else(tmp_path, monkeypatch):
+    monkeypatch.setenv("PABEL_SERVER_URL", "http://localhost:8001/mcp")
+    config = tmp_path / "opencode.json"
+    config.write_text(json.dumps({"model": "anthropic/claude-opus-5",
+                                  "mcp": {"someone-elses": {"type": "local"}}}))
+    INSTALLERS["opencode"].install(tmp_path)
+    INSTALLERS["opencode"].uninstall(tmp_path)
+    data = json.loads(config.read_text())
+    assert data["model"] == "anthropic/claude-opus-5"
+    assert set(data["mcp"]) == {"someone-elses"}
+
+
+def test_opencode_uninstall_is_clean_when_nothing_installed(tmp_path):
+    assert "nothing to do" in INSTALLERS["opencode"].uninstall(tmp_path)
+
+
+def test_opencode_hook_wiring_problem_flags_a_missing_plugin(tmp_path):
+    problem = INSTALLERS["opencode"].hook_wiring_problem(tmp_path)
+    assert problem is not None and "nothing will actually enforce" in problem
+
+
+def test_opencode_hook_wiring_problem_is_none_after_install(tmp_path):
+    opencode = INSTALLERS["opencode"]
+    opencode.install(tmp_path)
+    assert opencode.hook_wiring_problem(tmp_path) is None
+
+
+def test_opencode_hook_wiring_problem_flags_a_plugin_from_another_interpreter(tmp_path):
+    opencode = INSTALLERS["opencode"]
+    opencode.install(tmp_path)
+    plugin = tmp_path / ".opencode" / "plugins" / "pabel.js"
+    plugin.write_text(plugin.read_text().replace(
+        json.dumps(opencode.hook_argv()), '["/some/other/python","-m","x","opencode"]'))
+    problem = opencode.hook_wiring_problem(tmp_path)
+    assert problem is not None and "different interpreter" in problem
