@@ -64,6 +64,10 @@ mcp = FastMCP(
     # into Settings(), shadowing FASTMCP_HOST entirely. A container needs
     # 0.0.0.0 or port mapping can't reach it.
     host=os.environ.get("FASTMCP_HOST", "127.0.0.1"),
+    # Same shadowing, same fix: FASTMCP_PORT alone is silently ignored and
+    # the server comes up on 8000 whatever it was set to. Only visible as
+    # "connection refused" from a client pointed at the port you asked for.
+    port=int(os.environ.get("FASTMCP_PORT", "8000")),
 )
 
 
