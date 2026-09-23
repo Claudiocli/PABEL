@@ -34,6 +34,19 @@ RUN sed -i 's|cd \$<;|cd googletest-release-$(VERSION);|' deps/gtest/Makefile
 # $(MAKE), always correctly set regardless of platform.
 RUN sed -i 's|\$(MINGW_MAKE)|$(MAKE)|g' deps/relic/Makefile
 
+# Bug E: src/Makefile's default target is
+#     all: $(OABELIB) $(ZSYMLIB) $(PROGRAMS)
+# and $(PROGRAMS) includes test_libopenabe, which links librelic_s.a and
+# librelic_s_ec.a together. Those two archives export the same symbols
+# (bn_gcd_ext_lower, dv_equ, ...); current binutils refuses the duplicate
+# where older versions silently took the first definition. Neither the
+# library nor the oabe_* tools need that program, but the top-level Makefile
+# runs `src` before `cli`, so its failure blocks the tools as collateral -
+# which is why a build that passed in July stopped passing with nothing
+# changed on our side.
+RUN sed -i 's|^all: \$(OABELIB) \$(ZSYMLIB) \$(PROGRAMS)|all: $(OABELIB) $(ZSYMLIB)|' src/Makefile && \
+    grep -n '^all:' src/Makefile
+
 RUN bash deps/install_pkgs.sh
 RUN bash -c "source ./env && make"
 
@@ -43,8 +56,22 @@ RUN bash -c "source ./env && make"
 ENV LD_LIBRARY_PATH=/openabe/deps/root/lib:/openabe/deps/root/lib64:/openabe/root/lib:/openabe/root/lib64
 
 # Sanity check inside the build: the CLI tools must actually run, not
-# just link, before this stage is considered done.
-RUN cli/oabe_setup -s CP -p smoketest && test -f smoketest.mpk.cpabe
+# just link, before this stage is considered done - and what they write
+# must contain no carriage return. A CR here means this build would emit
+# artifacts an exact header compare() rejects on another platform, which
+# is the bug fixed in the fork's cli/common.cpp; asserting it makes a
+# regression a build failure rather than a decryption that quietly
+# returns nothing.
+#
+# The comparison is deliberately written for /bin/sh, which RUN uses:
+# `grep $'\r'` is bash-only ANSI-C quoting and, under dash, silently
+# searches for a literal string that is never present - an assertion that
+# always passes. `tr -d` removing nothing is the same statement, and true
+# in every shell.
+RUN cli/oabe_setup -s CP -p smoketest && \
+    test -f smoketest.mpk.cpabe && \
+    tr -d '\015' < smoketest.mpk.cpabe | cmp -s - smoketest.mpk.cpabe && \
+    echo "smoke: tools run, and write no CR"
 
 
 FROM python:3.12-slim AS runtime
