@@ -56,6 +56,28 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "pabel-agent-claude-code-0d8c98c3e61224db",
+      "name": "dev-machine (demo)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "secret": "{{CLAUDE_CODE_INSTALLATION_SECRET}}"
+    },
+    {
+      "clientId": "pabel-agent-opencode-97361cdc17af2424",
+      "name": "charlie's laptop",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "secret": "{{OPENCODE_INSTALLATION_SECRET}}"
     }
   ],
   "users": [
@@ -68,8 +90,8 @@
       "lastName": "Demo",
       "requiredActions": ["CONFIGURE_TOTP"],
       "credentials": [{"type": "password", "value": "{{ALICE_PASSWORD}}", "temporary": false}],
-      "attributes": {"abe_attributes": ["livello=3", "ruolo_ceo", "dev", "security_specialist"]},
-      "realmRoles": ["agent_claude_code_user"]
+      "attributes": {"abe_attributes": ["ceo", "executive", "security"]},
+      "realmRoles": ["agent_claude_code_user", "agent_opencode_user"]
     },
     {
       "username": "bob",
@@ -80,7 +102,8 @@
       "lastName": "Demo",
       "requiredActions": ["CONFIGURE_TOTP"],
       "credentials": [{"type": "password", "value": "{{BOB_PASSWORD}}", "temporary": false}],
-      "attributes": {"abe_attributes": ["livello=2", "ruolo_hr"]}
+      "attributes": {"abe_attributes": ["hr", "sales", "marketing"]},
+      "realmRoles": ["agent_claude_code_user"]
     },
     {
       "username": "charlie",
@@ -91,7 +114,8 @@
       "lastName": "Demo",
       "requiredActions": ["CONFIGURE_TOTP"],
       "credentials": [{"type": "password", "value": "{{CHARLIE_PASSWORD}}", "temporary": false}],
-      "attributes": {"abe_attributes": ["livello=1", "ruolo_dev"]}
+      "attributes": {"abe_attributes": ["dev", "risk", "executive"]},
+      "realmRoles": ["agent_opencode_user"]
     }
   ]
 }
