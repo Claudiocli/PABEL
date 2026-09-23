@@ -133,6 +133,30 @@ def keygen(attributes):
             os.remove(tmp_key)
 
 
+def _lf(data):
+    """Normalize CRLF to LF in an OpenABE artifact.
+
+    Every artifact the CLI produces - authority, keys, ciphertext - is
+    PEM-shaped text (a header line, one base64 line, a footer line) written
+    through cli/common.cpp's WriteToFile(), which opens the file in *text*
+    mode. On Windows that turns each \\n into \\r\\n; on Linux it does not.
+    The readers are not symmetric about this: ReadFile() finds its payload
+    with find() and hands it to a base64 decoder that ignores a stray \\r,
+    but ReadBlockFromFile() - the one decrypt.cpp uses for the ciphertext -
+    matches its header with an exact compare(). A Windows-written ciphertext
+    read by a Linux build therefore never matches "-----BEGIN ...-----"
+    against "-----BEGIN ...-----\\r", leaves the block empty, and decodes
+    nothing.
+
+    That is why a document authored on Windows decrypts on a Windows host
+    and fails in a Linux container, while keys and the authority cross
+    platforms unharmed - it was never a curve, word-size or build mismatch.
+    Normalizing here costs nothing on Windows (whose reader strips \\r
+    anyway) and makes the artifact readable by either build.
+    """
+    return data.replace(b"\r\n", b"\n")
+
+
 def decrypt_bytes(key_bytes, ciphertext):
     """Return the plaintext, or None when the key does not satisfy the policy."""
     kfd, key_path = tempfile.mkstemp(suffix=".key", prefix="abe_key_")
@@ -141,10 +165,13 @@ def decrypt_bytes(key_bytes, ciphertext):
     os.close(out_fd)
     os.remove(out_path)  # oabe_dec creates the output file only on success
     try:
+        # The key goes through _lf() too: a key minted by a Windows build
+        # and cached in Postgres is read back by whichever build serves the
+        # next request, which need not be the same one.
         with os.fdopen(kfd, "wb") as f:
-            f.write(key_bytes)
+            f.write(_lf(key_bytes))
         with os.fdopen(cfd, "wb") as f:
-            f.write(ciphertext)
+            f.write(_lf(ciphertext))
         _run("oabe_dec", ["-s", "CP", "-p", AUTHORITY,
                           "-k", key_path, "-i", ct_path, "-o", out_path])
         if os.path.exists(out_path):
